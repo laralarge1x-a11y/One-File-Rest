@@ -6,6 +6,10 @@ import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+import logger from './utils/logger.js';
+import { specs } from './utils/swagger.js';
 
 import pool from './db/client.js';
 import { discordStrategy } from './auth/discord.js';
@@ -28,9 +32,12 @@ import aiRoutes from './routes/ai.js';
 import analyticsRoutes from './routes/analytics.js';
 import subscriptionsRoutes from './routes/subscriptions.js';
 import complianceRoutes from './routes/compliance.js';
+import internalRoutes from './routes/internal.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
+import { createSocketEvents } from './services/socket-events.js';
+import { setSocketEvents } from './routes/cases.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -39,9 +46,60 @@ const io = new SocketServer(httpServer, {
   cors: { origin: '*', credentials: true },
 });
 
+// Rate limiters
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many login attempts, please try again later.',
+  skipSuccessfulRequests: true,
+});
+
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: 'Too many AI requests, please try again later.',
+});
+
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info('HTTP Request', {
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration: `${duration}ms`,
+      userId: (req.user as any)?.discord_id,
+      ip: req.ip,
+    });
+    if (duration > 1000) {
+      logger.warn('Slow request detected', {
+        method: req.method,
+        path: req.path,
+        duration: `${duration}ms`,
+      });
+    }
+  });
+  next();
+});
+
+// Apply rate limiting
+app.use('/api/', generalLimiter);
+app.use('/auth/login', authLimiter);
+app.use('/api/ai', aiLimiter);
 
 const PgSession = pgSession(session);
 app.use(
@@ -54,7 +112,7 @@ app.use(
       httpOnly: true,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     },
   })
 );
@@ -92,11 +150,35 @@ app.use('/api/ai', requireAuth, aiRoutes);
 app.use('/api/analytics', requireStaff, analyticsRoutes);
 app.use('/api/subscriptions', requireAuth, subscriptionsRoutes);
 app.use('/api/compliance', requireAuth, complianceRoutes);
+app.use('/internal', internalRoutes);
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({
+      status: 'healthy',
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    logger.error('Health check failed', { error: (err as Error).message });
+    res.status(503).json({
+      status: 'unhealthy',
+      error: 'Database connection failed',
+    });
+  }
 });
+
+// API Documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
+  swaggerOptions: {
+    persistAuthorization: true,
+  },
+}));
+
+// API Documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
 
 // Socket.io
 io.on('connection', (socket) => {
@@ -119,20 +201,26 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
+    logger.debug('User disconnected', { socketId: socket.id });
   });
 });
 
 // Startup
 async function start() {
   try {
+    logger.info('Starting Elite Tok Club Portal...');
+
+    // Initialize socket events
+    const socketEvents = createSocketEvents(io);
+    setSocketEvents(socketEvents);
+
     // Run migrations
-    console.log('Running database migrations...');
+    logger.info('Running database migrations...');
     const schema = await import('fs').then((fs) =>
       fs.promises.readFile(path.join(__dirname, 'db', 'schema.sql'), 'utf-8')
     );
     await pool.query(schema);
-    console.log('✓ Database schema migrated');
+    logger.info('Database schema migrated');
 
     // Seed staff if needed
     const ownerIds = (process.env.OWNER_DISCORD_IDS || '').split(',').filter(Boolean);
@@ -144,18 +232,18 @@ async function start() {
         [ownerId.trim(), 'Owner', 'owner', true]
       );
     }
-    console.log('✓ Staff seeded');
+    logger.info('Staff seeded');
 
     // Start deadline monitor
     startDeadlineMonitor(io);
-    console.log('✓ Deadline monitor started');
+    logger.info('Deadline monitor started');
 
     const PORT = process.env.PORT || 3000;
     httpServer.listen(PORT, () => {
-      console.log(`✓ Elite Tok Club Portal running on port ${PORT}`);
+      logger.info(`Elite Tok Club Portal running on port ${PORT}`);
     });
   } catch (err) {
-    console.error('Failed to start server:', err);
+    logger.error('Failed to start server', { error: (err as Error).message });
     process.exit(1);
   }
 }
@@ -163,3 +251,4 @@ async function start() {
 start();
 
 export { app, io };
+

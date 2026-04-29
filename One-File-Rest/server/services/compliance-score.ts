@@ -1,4 +1,13 @@
 import pool from '../db/client.js';
+import Redis from 'redis';
+
+const redis = Redis.createClient({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379'),
+});
+
+redis.on('error', (err) => console.error('Redis error:', err));
+redis.connect().catch(err => console.error('Redis connection error:', err));
 
 export interface ComplianceScoreFactor {
   name: string;
@@ -25,62 +34,77 @@ export interface UserComplianceScore {
 
 /**
  * Calculate compliance score for a specific case (TikTok account)
- * Score ranges from 0-100 with letter grades A-F
- * Factors include violations, appeals, account age, GMV, and more
+ * Optimized with single aggregated query instead of N+1 queries
  */
 export async function calculateComplianceScore(caseId: number): Promise<ComplianceScoreResult> {
-  const caseResult = await pool.query(
-    `SELECT c.*, o.* FROM cases c
-     LEFT JOIN onboarding_data o ON c.id = o.case_id
-     WHERE c.id = $1`,
+  // Check Redis cache first
+  const cacheKey = `compliance:${caseId}`;
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch (err) {
+    console.error('Redis cache error:', err);
+  }
+
+  // Single optimized query to get all metrics at once
+  const metricsResult = await pool.query(
+    `SELECT
+      c.id,
+      c.user_discord_id,
+      c.commission_frozen,
+      c.account_purchase_date,
+      c.violation_type,
+      c.created_at as case_created_at,
+      o.total_gmv,
+      o.face_videos_posted,
+      COUNT(CASE WHEN c2.status NOT IN ('won', 'closed') AND c2.created_at > NOW() - INTERVAL '90 days' THEN 1 END) as recent_violations,
+      COUNT(CASE WHEN c2.outcome = 'denied' THEN 1 END) as denied_appeals,
+      COUNT(CASE WHEN c2.outcome = 'won' THEN 1 END) as won_appeals,
+      COUNT(CASE WHEN c2.created_at <= NOW() - INTERVAL '90 days' AND c2.status NOT IN ('won', 'closed') THEN 1 END) as old_violations,
+      COUNT(CASE WHEN c2.violation_type = c.violation_type AND c2.id != c.id THEN 1 END) as prior_appeals,
+      MAX(c2.created_at) as last_violation_date
+    FROM cases c
+    LEFT JOIN onboarding_data o ON c.id = o.case_id
+    LEFT JOIN cases c2 ON c.user_discord_id = c2.user_discord_id
+    WHERE c.id = $1
+    GROUP BY c.id, c.user_discord_id, c.commission_frozen, c.account_purchase_date, c.violation_type, c.created_at, o.total_gmv, o.face_videos_posted`,
     [caseId]
   );
 
-  if (caseResult.rows.length === 0) {
+  if (metricsResult.rows.length === 0) {
     throw new Error(`Case ${caseId} not found`);
   }
 
-  const caseData = caseResult.rows[0] as any;
+  const metrics = metricsResult.rows[0] as any;
   let score = 100;
   const factors: ComplianceScoreFactor[] = [];
 
-  // 1. Recent violations in last 90 days (-15 each)
-  const recentViolationsResult = await pool.query(
-    `SELECT COUNT(*) as count FROM cases
-     WHERE user_discord_id = $1 AND created_at > NOW() - INTERVAL '90 days'
-     AND status NOT IN ('won', 'closed')`,
-    [caseData.user_discord_id]
-  );
-  const recentViolationCount = parseInt(recentViolationsResult.rows[0].count as string);
-  if (recentViolationCount > 0) {
-    const deduction = recentViolationCount * 15;
+  // 1. Recent violations (-15 each)
+  if (metrics.recent_violations > 0) {
+    const deduction = metrics.recent_violations * 15;
     score -= deduction;
     factors.push({
       name: 'Recent violations',
       impact: -deduction,
-      description: `${recentViolationCount} violation(s) in last 90 days`,
+      description: `${metrics.recent_violations} violation(s) in last 90 days`,
     });
   }
 
   // 2. Denied appeals (-10 each)
-  const deniedAppealsResult = await pool.query(
-    `SELECT COUNT(*) as count FROM cases
-     WHERE user_discord_id = $1 AND outcome = 'denied'`,
-    [caseData.user_discord_id]
-  );
-  const deniedCount = parseInt(deniedAppealsResult.rows[0].count as string);
-  if (deniedCount > 0) {
-    const deduction = deniedCount * 10;
+  if (metrics.denied_appeals > 0) {
+    const deduction = metrics.denied_appeals * 10;
     score -= deduction;
     factors.push({
       name: 'Denied appeals',
       impact: -deduction,
-      description: `${deniedCount} denied appeal(s)`,
+      description: `${metrics.denied_appeals} denied appeal(s)`,
     });
   }
 
   // 3. Commission frozen (-20)
-  if (caseData.commission_frozen) {
+  if (metrics.commission_frozen) {
     score -= 20;
     factors.push({
       name: 'Commission frozen',
@@ -90,7 +114,7 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
   }
 
   // 4. Purchased account (-10)
-  if (caseData.account_purchase_date) {
+  if (metrics.account_purchase_date) {
     score -= 10;
     factors.push({
       name: 'Purchased account',
@@ -99,43 +123,30 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
     });
   }
 
-  // 5. Prior appeal on same violation type (-8)
-  const priorAppealsResult = await pool.query(
-    `SELECT COUNT(*) as count FROM cases
-     WHERE user_discord_id = $1 AND violation_type = $2 AND id != $3`,
-    [caseData.user_discord_id, caseData.violation_type, caseId]
-  );
-  const priorAppealCount = parseInt(priorAppealsResult.rows[0].count as string);
-  if (priorAppealCount > 0) {
-    const deduction = priorAppealCount * 8;
+  // 5. Prior appeals on same violation (-8 each)
+  if (metrics.prior_appeals > 0) {
+    const deduction = metrics.prior_appeals * 8;
     score -= deduction;
     factors.push({
       name: 'Prior appeals on same violation',
       impact: -deduction,
-      description: `${priorAppealCount} prior appeal(s) on ${caseData.violation_type}`,
+      description: `${metrics.prior_appeals} prior appeal(s) on ${metrics.violation_type}`,
     });
   }
 
-  // 6. Violations older than 90 days (-5 each)
-  const oldViolationsResult = await pool.query(
-    `SELECT COUNT(*) as count FROM cases
-     WHERE user_discord_id = $1 AND created_at <= NOW() - INTERVAL '90 days'
-     AND status NOT IN ('won', 'closed')`,
-    [caseData.user_discord_id]
-  );
-  const oldViolationCount = parseInt(oldViolationsResult.rows[0].count as string);
-  if (oldViolationCount > 0) {
-    const deduction = oldViolationCount * 5;
+  // 6. Old violations (-5 each)
+  if (metrics.old_violations > 0) {
+    const deduction = metrics.old_violations * 5;
     score -= deduction;
     factors.push({
       name: 'Older violations',
       impact: -deduction,
-      description: `${oldViolationCount} violation(s) older than 90 days`,
+      description: `${metrics.old_violations} violation(s) older than 90 days`,
     });
   }
 
-  // 7. No face videos posted (-5)
-  if (caseData.face_videos_posted === 0) {
+  // 7. No face videos (-5)
+  if (metrics.face_videos_posted === 0) {
     score -= 5;
     factors.push({
       name: 'No face videos',
@@ -147,32 +158,20 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
   // POSITIVE FACTORS
 
   // 8. Won appeals (+10 each)
-  const wonAppealsResult = await pool.query(
-    `SELECT COUNT(*) as count FROM cases
-     WHERE user_discord_id = $1 AND outcome = 'won'`,
-    [caseData.user_discord_id]
-  );
-  const wonCount = parseInt(wonAppealsResult.rows[0].count as string);
-  if (wonCount > 0) {
-    const addition = wonCount * 10;
+  if (metrics.won_appeals > 0) {
+    const addition = metrics.won_appeals * 10;
     score += addition;
     factors.push({
       name: 'Won appeals',
       impact: addition,
-      description: `${wonCount} successful appeal(s)`,
+      description: `${metrics.won_appeals} successful appeal(s)`,
     });
   }
 
   // 9. 90+ days since last violation (+15)
-  const lastViolationResult = await pool.query(
-    `SELECT MAX(created_at) as last_violation FROM cases
-     WHERE user_discord_id = $1`,
-    [caseData.user_discord_id]
-  );
-  const lastViolation = lastViolationResult.rows[0].last_violation;
-  if (lastViolation) {
+  if (metrics.last_violation_date) {
     const daysSinceViolation = Math.floor(
-      (Date.now() - new Date(lastViolation).getTime()) / (1000 * 60 * 60 * 24)
+      (Date.now() - new Date(metrics.last_violation_date).getTime()) / (1000 * 60 * 60 * 24)
     );
     if (daysSinceViolation >= 90) {
       score += 15;
@@ -185,28 +184,28 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
   }
 
   // 10. High GMV (+5)
-  if (caseData.total_gmv && caseData.total_gmv >= 3000) {
+  if (metrics.total_gmv && metrics.total_gmv >= 3000) {
     score += 5;
     factors.push({
       name: 'High GMV',
       impact: 5,
-      description: `$${caseData.total_gmv}/month`,
+      description: `$${metrics.total_gmv}/month`,
     });
   }
 
   // 11. Multiple successful appeals (+8)
-  if (wonCount >= 2) {
+  if (metrics.won_appeals >= 2) {
     score += 8;
     factors.push({
       name: 'Multiple successful appeals',
       impact: 8,
-      description: `${wonCount} successful appeals`,
+      description: `${metrics.won_appeals} successful appeals`,
     });
   }
 
   // 12. Account age > 6 months (+5)
   const accountAge = Math.floor(
-    (Date.now() - new Date(caseData.created_at).getTime()) / (1000 * 60 * 60 * 24)
+    (Date.now() - new Date(metrics.case_created_at).getTime()) / (1000 * 60 * 60 * 24)
   );
   if (accountAge > 180) {
     score += 5;
@@ -228,7 +227,7 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
   else if (score >= 30) grade = 'D';
   else grade = 'F';
 
-  // Calculate trend (compare to 30 days ago)
+  // Calculate trend
   const previousScoreResult = await pool.query(
     `SELECT score FROM compliance_scores
      WHERE case_id = $1 AND created_at > NOW() - INTERVAL '31 days'
@@ -245,23 +244,23 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
 
   // Generate recommendations
   const recommendations: string[] = [];
-  if (caseData.face_videos_posted === 0) {
+  if (metrics.face_videos_posted === 0) {
     recommendations.push('Post face videos to improve your compliance score');
   }
-  if (caseData.commission_frozen) {
+  if (metrics.commission_frozen) {
     recommendations.push('Work on unfreezing your commission');
   }
-  if (recentViolationCount > 0) {
+  if (metrics.recent_violations > 0) {
     recommendations.push('Focus on avoiding new violations');
   }
-  if (caseData.total_gmv && caseData.total_gmv < 1000) {
+  if (metrics.total_gmv && metrics.total_gmv < 1000) {
     recommendations.push('Increase GMV to strengthen your account');
   }
-  if (deniedCount > 0) {
+  if (metrics.denied_appeals > 0) {
     recommendations.push('Review denied appeals to improve future appeals');
   }
 
-  return {
+  const result: ComplianceScoreResult = {
     score,
     grade,
     factors,
@@ -269,35 +268,46 @@ export async function calculateComplianceScore(caseId: number): Promise<Complian
     recommendations,
     lastCalculated: new Date(),
   };
+
+  // Cache for 1 hour
+  try {
+    await redis.setEx(cacheKey, 3600, JSON.stringify(result));
+  } catch (err) {
+    console.error('Failed to cache compliance score:', err);
+  }
+
+  return result;
 }
 
 /**
- * Get compliance scores for all accounts of a user
+ * Get compliance scores for all accounts of a user (optimized)
  */
 export async function getUserComplianceScores(discordId: string): Promise<UserComplianceScore[]> {
-  const casesResult = await pool.query(
-    `SELECT id, account_username FROM cases WHERE user_discord_id = $1 ORDER BY created_at DESC`,
+  // Single query with aggregations instead of N+1
+  const scoresResult = await pool.query(
+    `SELECT
+      c.id,
+      c.account_username,
+      COALESCE(cs.score, 0) as score,
+      COALESCE(cs.grade, 'F') as grade,
+      COALESCE(cs.trend, 'stable') as trend
+    FROM cases c
+    LEFT JOIN (
+      SELECT case_id, score, grade, trend, ROW_NUMBER() OVER (PARTITION BY case_id ORDER BY created_at DESC) as rn
+      FROM compliance_scores
+    ) cs ON c.id = cs.case_id AND cs.rn = 1
+    WHERE c.user_discord_id = $1
+    ORDER BY c.created_at DESC`,
     [discordId]
   );
 
-  const scores: UserComplianceScore[] = [];
-
-  for (const row of casesResult.rows) {
-    try {
-      const scoreResult = await calculateComplianceScore(row.id as number);
-      scores.push({
-        caseId: row.id as number,
-        accountUsername: row.account_username as string,
-        score: scoreResult.score,
-        grade: scoreResult.grade,
-        trend: scoreResult.trend,
-      });
-    } catch (err) {
-      console.error(`Failed to calculate score for case ${row.id}:`, err);
-    }
-  }
-
-  return scores;
+  return scoresResult.rows.map(row => ({
+    caseId: row.id as number,
+    accountUsername: row.account_username as string,
+    score: row.score as number,
+    grade: row.grade as 'A' | 'B' | 'C' | 'D' | 'F',
+    trend: row.trend as 'improving' | 'stable' | 'declining',
+  }));
 }
 
 /**
@@ -306,7 +316,7 @@ export async function getUserComplianceScores(discordId: string): Promise<UserCo
 export async function recalculateComplianceScore(caseId: number): Promise<ComplianceScoreResult> {
   const result = await calculateComplianceScore(caseId);
 
-  // Cache the score
+  // Cache the score in database
   try {
     await pool.query(
       `INSERT INTO compliance_scores (case_id, score, grade, trend, factors, recommendations, created_at)
@@ -325,4 +335,15 @@ export async function recalculateComplianceScore(caseId: number): Promise<Compli
   }
 
   return result;
+}
+
+/**
+ * Clear compliance score cache
+ */
+export async function clearComplianceCache(caseId: number): Promise<void> {
+  try {
+    await redis.del(`compliance:${caseId}`);
+  } catch (err) {
+    console.error('Failed to clear compliance cache:', err);
+  }
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { useSocket } from './hooks/useSocket';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Layout
 import Sidebar from './components/layout/Sidebar';
@@ -41,7 +42,9 @@ const ClientLayout: React.FC<LayoutProps> = ({ children }) => (
     <Sidebar />
     <div className="main-content">
       <Header />
-      <div className="page-content">{children}</div>
+      <div className="page-content">
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </div>
     </div>
   </div>
 );
@@ -51,7 +54,9 @@ const AdminLayout: React.FC<LayoutProps> = ({ children }) => (
     <AdminSidebar />
     <div className="main-content">
       <Header isAdmin />
-      <div className="page-content">{children}</div>
+      <div className="page-content">
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </div>
     </div>
   </div>
 );

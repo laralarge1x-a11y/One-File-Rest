@@ -2,8 +2,23 @@ import { Router, Request, Response } from 'express';
 import pool from '../db/client.js';
 import { calculateComplianceScore } from '../services/compliance-score.js';
 import { v4 as uuidv4 } from 'uuid';
+import { createCaseSchema, updateCaseSchema, validateRequest, validateParams } from '../utils/validation.js';
+import { z } from 'zod';
+import logger from '../utils/logger.js';
 
 const router = Router();
+
+// Param validation schema
+const idParamSchema = z.object({
+  id: z.string().regex(/^\d+$/, 'Invalid case ID')
+});
+
+// Socket events instance (will be injected)
+let socketEvents: any = null;
+
+export function setSocketEvents(events: any) {
+  socketEvents = events;
+}
 
 /**
  * GET /api/cases - Get all cases for authenticated user
@@ -81,9 +96,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 /**
  * POST /api/cases - Create new case
  */
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', validateRequest(createCaseSchema), async (req: Request, res: Response) => {
   try {
     const discordId = req.user?.discord_id;
+    const validatedBody = (req as any).validatedBody;
     const {
       accountUsername,
       violationType,
@@ -93,11 +109,7 @@ router.post('/', async (req: Request, res: Response) => {
       faceVideosPosted,
       commissionFrozen,
       accountPurchaseDate,
-    } = req.body;
-
-    if (!accountUsername || !violationType) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
+    } = validatedBody;
 
     const result = await pool.query(
       `INSERT INTO cases (
@@ -126,12 +138,19 @@ router.post('/', async (req: Request, res: Response) => {
     // Calculate initial compliance score
     const complianceScore = await calculateComplianceScore(newCase.id);
 
+    // Emit socket event
+    if (socketEvents) {
+      socketEvents.emitCaseCreated(newCase);
+    }
+
+    logger.info('Case created', { caseId: newCase.id, userId: discordId });
+
     res.status(201).json({
       ...newCase,
       complianceScore,
     });
   } catch (err) {
-    console.error('Error creating case:', err);
+    logger.error('Error creating case', { error: (err as Error).message });
     res.status(500).json({ error: 'Failed to create case' });
   }
 });
@@ -139,11 +158,11 @@ router.post('/', async (req: Request, res: Response) => {
 /**
  * PATCH /api/cases/:id - Update case
  */
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', validateRequest(updateCaseSchema), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const discordId = req.user?.discord_id;
-    const { status, priority, appealDeadline, outcome } = req.body;
+    const validatedData = (req as any).validatedBody;
 
     // Verify ownership
     const caseResult = await pool.query(
@@ -164,21 +183,41 @@ router.patch('/:id', async (req: Request, res: Response) => {
     const values: any[] = [];
     let paramCount = 1;
 
-    if (status !== undefined) {
+    if (validatedData.status !== undefined) {
       updates.push(`status = $${paramCount++}`);
-      values.push(status);
+      values.push(validatedData.status);
     }
-    if (priority !== undefined) {
+    if (validatedData.priority !== undefined) {
       updates.push(`priority = $${paramCount++}`);
-      values.push(priority);
+      values.push(validatedData.priority);
     }
-    if (appealDeadline !== undefined) {
+    if (validatedData.appealDeadline !== undefined) {
       updates.push(`appeal_deadline = $${paramCount++}`);
-      values.push(appealDeadline);
+      values.push(validatedData.appealDeadline);
     }
-    if (outcome !== undefined) {
+    if (validatedData.outcome !== undefined) {
       updates.push(`outcome = $${paramCount++}`);
-      values.push(outcome);
+      values.push(validatedData.outcome);
+    }
+    if (validatedData.violationType !== undefined) {
+      updates.push(`violation_type = $${paramCount++}`);
+      values.push(validatedData.violationType);
+    }
+    if (validatedData.violationDescription !== undefined) {
+      updates.push(`violation_description = $${paramCount++}`);
+      values.push(validatedData.violationDescription);
+    }
+    if (validatedData.outcomeNotes !== undefined) {
+      updates.push(`outcome_notes = $${paramCount++}`);
+      values.push(validatedData.outcomeNotes);
+    }
+    if (validatedData.internalNotes !== undefined) {
+      updates.push(`internal_notes = $${paramCount++}`);
+      values.push(validatedData.internalNotes);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
     }
 
     updates.push(`updated_at = NOW()`);
@@ -187,10 +226,18 @@ router.patch('/:id', async (req: Request, res: Response) => {
     const updateQuery = `UPDATE cases SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
 
     const result = await pool.query(updateQuery, values);
+    const updatedCase = result.rows[0];
 
-    res.json(result.rows[0]);
+    // Emit socket event
+    if (socketEvents) {
+      socketEvents.emitCaseUpdated(updatedCase, discordId);
+    }
+
+    logger.info('Case updated', { caseId: id, userId: discordId });
+
+    res.json(updatedCase);
   } catch (err) {
-    console.error('Error updating case:', err);
+    logger.error('Error updating case', { error: (err as Error).message });
     res.status(500).json({ error: 'Failed to update case' });
   }
 });
@@ -223,9 +270,16 @@ router.delete('/:id', async (req: Request, res: Response) => {
       [id]
     );
 
+    // Emit socket event
+    if (socketEvents) {
+      socketEvents.emitCaseDeleted(parseInt(id), discordId);
+    }
+
+    logger.info('Case deleted', { caseId: id, userId: discordId });
+
     res.json({ success: true });
   } catch (err) {
-    console.error('Error deleting case:', err);
+    logger.error('Error deleting case', { error: (err as Error).message });
     res.status(500).json({ error: 'Failed to delete case' });
   }
 });

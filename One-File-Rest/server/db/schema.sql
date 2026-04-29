@@ -201,6 +201,53 @@ CREATE TABLE IF NOT EXISTS deadline_alerts_sent (
   PRIMARY KEY (case_id, alert_type)
 );
 
+-- Portal access records — one per client
+CREATE TABLE IF NOT EXISTS portal_access (
+  id SERIAL PRIMARY KEY,
+  discord_id VARCHAR(20) UNIQUE NOT NULL,
+  discord_username VARCHAR(100) NOT NULL,
+  plan VARCHAR(20) NOT NULL CHECK (plan IN ('basic', 'fortnightly', 'proshield')),
+  subscription_start DATE NOT NULL,
+  portal_token UUID NOT NULL,
+  portal_url VARCHAR(500) NOT NULL,
+  update_channel_id VARCHAR(20) NOT NULL,
+  webhook_id VARCHAR(20),
+  webhook_url VARCHAR(500),
+  webhook_token VARCHAR(200),
+  access_active BOOLEAN DEFAULT true,
+  granted_at TIMESTAMPTZ DEFAULT NOW(),
+  granted_by VARCHAR(20),
+  revoked_at TIMESTAMPTZ,
+  revoked_by VARCHAR(20),
+  revoke_reason VARCHAR(50),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Track portal update notifications sent via webhook
+CREATE TABLE IF NOT EXISTS portal_webhook_logs (
+  id SERIAL PRIMARY KEY,
+  discord_id VARCHAR(20) NOT NULL,
+  webhook_id VARCHAR(20) NOT NULL,
+  event_type VARCHAR(50) NOT NULL,
+  content TEXT NOT NULL,
+  sent_at TIMESTAMPTZ DEFAULT NOW(),
+  success BOOLEAN DEFAULT true,
+  error_message TEXT
+);
+
+-- Compliance scores cache — stores calculated scores for performance
+CREATE TABLE IF NOT EXISTS compliance_scores (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER UNIQUE REFERENCES cases(id) ON DELETE CASCADE,
+  score INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
+  grade VARCHAR(1) NOT NULL CHECK (grade IN ('A', 'B', 'C', 'D', 'F')),
+  trend VARCHAR(20) CHECK (trend IN ('improving', 'stable', 'declining')),
+  factors JSONB DEFAULT '[]',
+  recommendations JSONB DEFAULT '[]',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_cases_user ON cases(user_discord_id);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
@@ -209,3 +256,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_case ON messages(case_id);
 CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(is_read) WHERE is_read = false;
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_discord_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_evidence_case ON evidence(case_id);
+CREATE INDEX IF NOT EXISTS idx_portal_access_discord ON portal_access(discord_id);
+CREATE INDEX IF NOT EXISTS idx_portal_access_active ON portal_access(access_active);
+CREATE INDEX IF NOT EXISTS idx_portal_webhook_logs_discord ON portal_webhook_logs(discord_id);

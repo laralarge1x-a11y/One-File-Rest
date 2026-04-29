@@ -1,95 +1,90 @@
 import pool from '../db/client.js';
 import { Server as SocketServer } from 'socket.io';
+import logger from '../utils/logger.js';
 
 export function startDeadlineMonitor(io: SocketServer) {
   setInterval(async () => {
     try {
-      const result = await pool.query(
-        `SELECT c.*, u.discord_username FROM cases c
+      // Optimized: Query only cases with deadlines in next 72 hours
+      const casesResult = await pool.query(
+        `SELECT c.id, c.user_discord_id, c.appeal_deadline, u.discord_username
+         FROM cases c
          JOIN users u ON c.user_discord_id = u.discord_id
          WHERE c.status NOT IN ('won', 'denied', 'closed')
          AND c.appeal_deadline IS NOT NULL
-         AND c.appeal_deadline > NOW()`
+         AND c.appeal_deadline > NOW()
+         AND c.appeal_deadline < NOW() + INTERVAL '72 hours'`
       );
 
-      for (const caseData of result.rows) {
+      if (casesResult.rows.length === 0) {
+        return;
+      }
+
+      const caseIds = casesResult.rows.map(c => c.id);
+
+      // Optimized: Get all sent alerts in single query instead of N queries
+      const alertsResult = await pool.query(
+        `SELECT case_id, alert_type FROM deadline_alerts_sent
+         WHERE case_id = ANY($1)`,
+        [caseIds]
+      );
+
+      const sentAlerts = new Map();
+      alertsResult.rows.forEach(row => {
+        const key = `${row.case_id}:${row.alert_type}`;
+        sentAlerts.set(key, true);
+      });
+
+      // Process each case
+      for (const caseData of casesResult.rows) {
         const hoursRemaining = Math.floor(
           (new Date(caseData.appeal_deadline).getTime() - Date.now()) / (1000 * 60 * 60)
         );
 
-        // 72-hour alert
-        if (hoursRemaining >= 71 && hoursRemaining <= 73) {
-          const existing = await pool.query(
-            `SELECT * FROM deadline_alerts_sent WHERE case_id = $1 AND alert_type = $2`,
-            [caseData.id, '72h']
-          );
+        const alertThresholds = [
+          { type: '72h', min: 71, max: 73 },
+          { type: '24h', min: 23, max: 25 },
+          { type: '6h', min: 5, max: 7 },
+        ];
 
-          if (existing.rows.length === 0) {
-            await pool.query(
-              `INSERT INTO deadline_alerts_sent (case_id, alert_type) VALUES ($1, $2)`,
-              [caseData.id, '72h']
-            );
+        for (const threshold of alertThresholds) {
+          if (hoursRemaining >= threshold.min && hoursRemaining <= threshold.max) {
+            const alertKey = `${caseData.id}:${threshold.type}`;
 
-            io.to('admin').emit('case:deadline_alert', {
-              case_id: caseData.id,
-              client_name: caseData.discord_username,
-              hours_remaining: hoursRemaining,
-              alert_type: '72h',
-            });
-          }
-        }
+            if (!sentAlerts.has(alertKey)) {
+              // Insert alert record
+              await pool.query(
+                `INSERT INTO deadline_alerts_sent (case_id, alert_type) VALUES ($1, $2)`,
+                [caseData.id, threshold.type]
+              );
 
-        // 24-hour alert
-        if (hoursRemaining >= 23 && hoursRemaining <= 25) {
-          const existing = await pool.query(
-            `SELECT * FROM deadline_alerts_sent WHERE case_id = $1 AND alert_type = $2`,
-            [caseData.id, '24h']
-          );
+              // Update priority for 24h alert
+              if (threshold.type === '24h') {
+                await pool.query(
+                  `UPDATE cases SET priority = $1 WHERE id = $2`,
+                  ['critical', caseData.id]
+                );
+              }
 
-          if (existing.rows.length === 0) {
-            await pool.query(
-              `INSERT INTO deadline_alerts_sent (case_id, alert_type) VALUES ($1, $2)`,
-              [caseData.id, '24h']
-            );
+              // Emit socket event
+              io.to('admin').emit('case:deadline_alert', {
+                case_id: caseData.id,
+                client_name: caseData.discord_username,
+                hours_remaining: hoursRemaining,
+                alert_type: threshold.type,
+              });
 
-            await pool.query(
-              `UPDATE cases SET priority = $1 WHERE id = $2`,
-              ['critical', caseData.id]
-            );
-
-            io.to('admin').emit('case:deadline_alert', {
-              case_id: caseData.id,
-              client_name: caseData.discord_username,
-              hours_remaining: hoursRemaining,
-              alert_type: '24h',
-            });
-          }
-        }
-
-        // 6-hour alert
-        if (hoursRemaining >= 5 && hoursRemaining <= 7) {
-          const existing = await pool.query(
-            `SELECT * FROM deadline_alerts_sent WHERE case_id = $1 AND alert_type = $2`,
-            [caseData.id, '6h']
-          );
-
-          if (existing.rows.length === 0) {
-            await pool.query(
-              `INSERT INTO deadline_alerts_sent (case_id, alert_type) VALUES ($1, $2)`,
-              [caseData.id, '6h']
-            );
-
-            io.to('admin').emit('case:deadline_alert', {
-              case_id: caseData.id,
-              client_name: caseData.discord_username,
-              hours_remaining: hoursRemaining,
-              alert_type: '6h',
-            });
+              logger.info('Deadline alert sent', {
+                caseId: caseData.id,
+                alertType: threshold.type,
+                hoursRemaining,
+              });
+            }
           }
         }
       }
     } catch (err) {
-      console.error('Deadline monitor error:', err);
+      logger.error('Deadline monitor error', { error: (err as Error).message });
     }
   }, 15 * 60 * 1000); // Run every 15 minutes
 }

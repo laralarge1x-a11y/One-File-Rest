@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useSocket } from '../hooks/useSocket';
+import { SkeletonLoader } from '../components/Skeleton';
 
 interface Case {
   id: number;
@@ -98,14 +99,7 @@ export default function Dashboard() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading your cases...</p>
-        </div>
-      </div>
-    );
+    return <SkeletonLoader />;
   }
 
   return (
