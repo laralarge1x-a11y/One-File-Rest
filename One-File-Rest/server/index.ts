@@ -59,7 +59,9 @@ app.use(
   })
 );
 
-passport.use(discordStrategy);
+if (discordStrategy) {
+  passport.use(discordStrategy);
+}
 passport.serializeUser((user: any, done) => {
   done(null, user.discord_id);
 });

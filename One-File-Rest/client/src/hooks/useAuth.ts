@@ -29,7 +29,7 @@ export function useAuth() {
 
   const fetchUser = async () => {
     try {
-      const response = await fetch('/api/auth/me', {
+      const response = await fetch('/auth/me', {
         credentials: 'include',
       });
 
@@ -49,8 +49,7 @@ export function useAuth() {
 
   const logout = async () => {
     try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
+      await fetch('/auth/logout', {
         credentials: 'include',
       });
       setUser(null);
@@ -63,6 +62,7 @@ export function useAuth() {
   return {
     user,
     loading,
+    isLoading: loading,
     isAuthenticated: !!user,
     logout,
   };

@@ -18,43 +18,54 @@ interface User {
   role: 'client' | 'support' | 'case_manager' | 'owner';
 }
 
-export const discordStrategy = new DiscordStrategy(
-  {
-    clientID: process.env.DISCORD_CLIENT_ID!,
-    clientSecret: process.env.DISCORD_CLIENT_SECRET!,
-    callbackURL: process.env.DISCORD_REDIRECT_URI!,
-    scope: ['identify', 'email'],
-  },
-  async (accessToken: string, refreshToken: string, profile: DiscordProfile, done: (err: Error | null, user?: User | null) => void) => {
-    try {
-      const result = await pool.query(
-        `INSERT INTO users (discord_id, discord_username, discord_avatar, email)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (discord_id) DO UPDATE SET
-           discord_username = $2,
-           discord_avatar = $3,
-           email = $4,
-           last_active = NOW(),
-           updated_at = NOW()
-         RETURNING *`,
-        [profile.id, profile.username, profile.avatar, profile.email]
-      );
+const clientID = process.env.DISCORD_CLIENT_ID;
+const clientSecret = process.env.DISCORD_CLIENT_SECRET;
+const callbackURL = process.env.DISCORD_REDIRECT_URI;
 
-      const user = result.rows[0] as User;
+if (!clientID || !clientSecret || !callbackURL) {
+  console.warn('⚠️  Discord OAuth credentials not configured. Authentication will be unavailable.');
+  console.warn('   Set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI to enable login.');
+}
 
-      const staffResult = await pool.query(
-        'SELECT role FROM staff WHERE discord_id = $1',
-        [profile.id]
-      );
+export const discordStrategy = clientID && clientSecret && callbackURL
+  ? new DiscordStrategy(
+      {
+        clientID,
+        clientSecret,
+        callbackURL,
+        scope: ['identify', 'email'],
+      },
+      async (accessToken: string, refreshToken: string, profile: DiscordProfile, done: (err: Error | null, user?: User | null) => void) => {
+        try {
+          const result = await pool.query(
+            `INSERT INTO users (discord_id, discord_username, discord_avatar, email)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (discord_id) DO UPDATE SET
+               discord_username = $2,
+               discord_avatar = $3,
+               email = $4,
+               last_active = NOW(),
+               updated_at = NOW()
+             RETURNING *`,
+            [profile.id, profile.username, profile.avatar, profile.email]
+          );
 
-      const role = staffResult.rows[0]?.role || 'client';
+          const user = result.rows[0] as User;
 
-      return done(null, {
-        ...user,
-        role,
-      });
-    } catch (err) {
-      return done(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
-);
+          const staffResult = await pool.query(
+            'SELECT role FROM staff WHERE discord_id = $1',
+            [profile.id]
+          );
+
+          const role = staffResult.rows[0]?.role || 'client';
+
+          return done(null, {
+            ...user,
+            role,
+          });
+        } catch (err) {
+          return done(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+    )
+  : null;

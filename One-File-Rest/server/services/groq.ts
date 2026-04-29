@@ -1,8 +1,12 @@
 import Groq from 'groq-sdk';
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
+if (!process.env.GROQ_API_KEY) {
+  console.warn('⚠️  GROQ_API_KEY not configured. AI features will be unavailable.');
+}
+
+const groq = process.env.GROQ_API_KEY
+  ? new Groq({ apiKey: process.env.GROQ_API_KEY })
+  : null;
 
 export interface Message {
   role: 'user' | 'assistant';
@@ -36,6 +40,7 @@ export interface GroqJSONOptions<T> {
  * Uses llama-3.3-70b-versatile model for general text tasks
  */
 export async function groqText(options: GroqTextOptions): Promise<string> {
+  if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
   const {
     systemPrompt,
     userMessage,
@@ -72,6 +77,7 @@ export async function groqText(options: GroqTextOptions): Promise<string> {
  * Uses llama-3.2-90b-vision-preview model for image analysis
  */
 export async function groqVision(options: GroqVisionOptions): Promise<string> {
+  if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
   const {
     imageUrl,
     question,
@@ -113,6 +119,7 @@ export async function groqVision(options: GroqVisionOptions): Promise<string> {
  * Uses llama-3.3-70b-versatile model with lower temperature for consistency
  */
 export async function groqJSON<T = any>(options: GroqJSONOptions<T>): Promise<T> {
+  if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
   const {
     systemPrompt,
     userMessage,
@@ -150,6 +157,7 @@ export async function groqJSON<T = any>(options: GroqJSONOptions<T>): Promise<T>
  * Uses llama-3.1-8b-instant for quick responses
  */
 export async function groqFast(options: GroqTextOptions): Promise<string> {
+  if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
   const {
     systemPrompt,
     userMessage,
