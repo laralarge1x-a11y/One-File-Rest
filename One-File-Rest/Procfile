@@ -1,0 +1,2 @@
+web: tsx server/index.ts
+bridge: tsx bot-bridge/index.ts
