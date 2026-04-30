@@ -259,3 +259,443 @@ CREATE INDEX IF NOT EXISTS idx_evidence_case ON evidence(case_id);
 CREATE INDEX IF NOT EXISTS idx_portal_access_discord ON portal_access(discord_id);
 CREATE INDEX IF NOT EXISTS idx_portal_access_active ON portal_access(access_active);
 CREATE INDEX IF NOT EXISTS idx_portal_webhook_logs_discord ON portal_webhook_logs(discord_id);
+
+-- ============================================================================
+-- FEATURE 6: CASE EXPORT & REPORTING
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS reports (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  report_type VARCHAR(50) NOT NULL CHECK (report_type IN ('monthly', 'quarterly', 'custom', 'compliance', 'analytics')),
+  title VARCHAR(300) NOT NULL,
+  description TEXT,
+  filters JSONB DEFAULT '{}',
+  data JSONB NOT NULL,
+  format VARCHAR(20) NOT NULL CHECK (format IN ('pdf', 'csv', 'json', 'excel')),
+  file_url VARCHAR(500),
+  file_size_bytes INTEGER,
+  generated_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  is_scheduled BOOLEAN DEFAULT false,
+  schedule_cron VARCHAR(100),
+  last_generated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS export_logs (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  case_ids INTEGER[],
+  export_type VARCHAR(50) NOT NULL,
+  format VARCHAR(20) NOT NULL,
+  record_count INTEGER,
+  file_size_bytes INTEGER,
+  file_url VARCHAR(500),
+  status VARCHAR(20) DEFAULT 'completed' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+  error_message TEXT,
+  exported_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS report_templates (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  template_name VARCHAR(200) NOT NULL,
+  template_config JSONB NOT NULL,
+  sections TEXT[],
+  is_public BOOLEAN DEFAULT false,
+  created_by VARCHAR(20),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_reports_type ON reports(report_type);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_export_logs_user ON export_logs(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_export_logs_status ON export_logs(status);
+CREATE INDEX IF NOT EXISTS idx_report_templates_user ON report_templates(user_discord_id);
+
+-- ============================================================================
+-- FEATURE 7: COMPLIANCE SCORE PREDICTIONS
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS compliance_score_history (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  score INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
+  grade VARCHAR(1) NOT NULL CHECK (grade IN ('A', 'B', 'C', 'D', 'F')),
+  factors JSONB NOT NULL,
+  trend VARCHAR(20) CHECK (trend IN ('improving', 'stable', 'declining')),
+  calculated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS compliance_predictions (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  predicted_score INTEGER NOT NULL CHECK (predicted_score >= 0 AND predicted_score <= 100),
+  predicted_grade VARCHAR(1) NOT NULL CHECK (predicted_grade IN ('A', 'B', 'C', 'D', 'F')),
+  confidence_level NUMERIC(5,2) CHECK (confidence_level >= 0 AND confidence_level <= 100),
+  prediction_date DATE NOT NULL,
+  factors_influencing JSONB NOT NULL,
+  recommendations JSONB NOT NULL,
+  model_version VARCHAR(50),
+  accuracy_score NUMERIC(5,2),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS compliance_benchmarks (
+  id SERIAL PRIMARY KEY,
+  violation_type VARCHAR(100) NOT NULL UNIQUE,
+  avg_score NUMERIC(5,2),
+  median_score NUMERIC(5,2),
+  percentile_25 NUMERIC(5,2),
+  percentile_50 NUMERIC(5,2),
+  percentile_75 NUMERIC(5,2),
+  percentile_90 NUMERIC(5,2),
+  sample_size INTEGER,
+  trend_direction VARCHAR(20),
+  last_updated TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS compliance_insights (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  insight_type VARCHAR(50) NOT NULL,
+  title VARCHAR(200),
+  description TEXT,
+  impact_score INTEGER,
+  actionable_recommendations TEXT[],
+  priority VARCHAR(20) CHECK (priority IN ('low', 'medium', 'high', 'critical')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_history_case ON compliance_score_history(case_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_history_date ON compliance_score_history(calculated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_compliance_predictions_case ON compliance_predictions(case_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_predictions_date ON compliance_predictions(prediction_date DESC);
+CREATE INDEX IF NOT EXISTS idx_compliance_benchmarks_type ON compliance_benchmarks(violation_type);
+CREATE INDEX IF NOT EXISTS idx_compliance_insights_case ON compliance_insights(case_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_insights_priority ON compliance_insights(priority);
+
+-- ============================================================================
+-- FEATURE 8: APPEAL HISTORY & VERSIONING
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS appeal_versions (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  appeal_content TEXT NOT NULL,
+  arguments TEXT[],
+  evidence_ids INTEGER[],
+  created_by_discord_id VARCHAR(20),
+  change_summary TEXT,
+  status VARCHAR(20) DEFAULT 'draft' CHECK (status IN ('draft', 'submitted', 'archived', 'rejected')),
+  submission_date TIMESTAMPTZ,
+  tiktok_response TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(case_id, version_number)
+);
+
+CREATE TABLE IF NOT EXISTS appeal_history (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  action VARCHAR(100) NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  changed_by_discord_id VARCHAR(20),
+  change_reason TEXT,
+  field_name VARCHAR(100),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS appeal_learnings (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  what_worked TEXT,
+  what_didnt_work TEXT,
+  key_insights TEXT,
+  recommendations_for_future TEXT,
+  success_factors TEXT[],
+  failure_factors TEXT[],
+  created_by_discord_id VARCHAR(20),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS appeal_comparisons (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  version_1_id INTEGER REFERENCES appeal_versions(id),
+  version_2_id INTEGER REFERENCES appeal_versions(id),
+  differences JSONB NOT NULL,
+  similarity_score NUMERIC(5,2),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_appeal_versions_case ON appeal_versions(case_id);
+CREATE INDEX IF NOT EXISTS idx_appeal_versions_status ON appeal_versions(status);
+CREATE INDEX IF NOT EXISTS idx_appeal_history_case ON appeal_history(case_id);
+CREATE INDEX IF NOT EXISTS idx_appeal_history_date ON appeal_history(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_appeal_learnings_case ON appeal_learnings(case_id);
+CREATE INDEX IF NOT EXISTS idx_appeal_comparisons_case ON appeal_comparisons(case_id);
+
+-- ============================================================================
+-- ADVANCED FEATURES: AUDIT, SEARCH, ANALYTICS
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  action VARCHAR(100) NOT NULL,
+  entity_type VARCHAR(50),
+  entity_id INTEGER,
+  old_values JSONB,
+  new_values JSONB,
+  ip_address VARCHAR(45),
+  user_agent TEXT,
+  status VARCHAR(20) DEFAULT 'success' CHECK (status IN ('success', 'failed', 'pending')),
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS search_logs (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  search_query TEXT NOT NULL,
+  search_type VARCHAR(50),
+  results_count INTEGER,
+  execution_time_ms INTEGER,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_dashboards (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  dashboard_name VARCHAR(200) NOT NULL,
+  dashboard_config JSONB NOT NULL,
+  widgets JSONB NOT NULL,
+  is_default BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS saved_searches (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  search_name VARCHAR(200) NOT NULL,
+  search_query JSONB NOT NULL,
+  filters JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) UNIQUE REFERENCES users(discord_id) ON DELETE CASCADE,
+  email_notifications BOOLEAN DEFAULT true,
+  discord_notifications BOOLEAN DEFAULT true,
+  in_app_notifications BOOLEAN DEFAULT true,
+  sms_notifications BOOLEAN DEFAULT false,
+  digest_frequency VARCHAR(20) DEFAULT 'daily' CHECK (digest_frequency IN ('immediate', 'daily', 'weekly', 'never')),
+  notification_types JSONB DEFAULT '{}',
+  quiet_hours_start TIME,
+  quiet_hours_end TIME,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_date ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_search_logs_user ON search_logs(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_search_logs_date ON search_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_dashboards_user ON user_dashboards(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_discord_id);
+
+
+-- Feature 6: Case Export & Reporting
+CREATE TABLE IF NOT EXISTS reports (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  report_type VARCHAR(50) NOT NULL CHECK (report_type IN ('monthly', 'quarterly', 'custom', 'compliance', 'analytics')),
+  title VARCHAR(300) NOT NULL,
+  description TEXT,
+  filters JSONB DEFAULT '{}',
+  data JSONB NOT NULL,
+  format VARCHAR(20) NOT NULL CHECK (format IN ('pdf', 'csv', 'json', 'excel')),
+  file_url VARCHAR(500),
+  file_size_bytes INTEGER,
+  generated_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  is_scheduled BOOLEAN DEFAULT false,
+  schedule_cron VARCHAR(100),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS export_logs (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  case_ids INTEGER[],
+  export_type VARCHAR(50),
+  format VARCHAR(20),
+  record_count INTEGER,
+  file_size_bytes INTEGER,
+  file_url VARCHAR(500),
+  exported_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Feature 7: Compliance Score Predictions
+CREATE TABLE IF NOT EXISTS compliance_score_history (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  score INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
+  grade VARCHAR(1) NOT NULL CHECK (grade IN ('A', 'B', 'C', 'D', 'F')),
+  factors JSONB NOT NULL,
+  calculated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS compliance_predictions (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  predicted_score INTEGER NOT NULL CHECK (predicted_score >= 0 AND predicted_score <= 100),
+  confidence_level NUMERIC(5,2) CHECK (confidence_level >= 0 AND confidence_level <= 100),
+  prediction_date DATE NOT NULL,
+  factors_influencing JSONB,
+  recommendations JSONB,
+  model_version VARCHAR(50),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS compliance_benchmarks (
+  id SERIAL PRIMARY KEY,
+  violation_type VARCHAR(100) NOT NULL UNIQUE,
+  avg_score NUMERIC(5,2),
+  median_score NUMERIC(5,2),
+  percentile_25 NUMERIC(5,2),
+  percentile_75 NUMERIC(5,2),
+  percentile_90 NUMERIC(5,2),
+  sample_size INTEGER,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Feature 8: Appeal History & Versioning
+CREATE TABLE IF NOT EXISTS appeal_versions (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  appeal_content TEXT NOT NULL,
+  arguments TEXT[],
+  evidence_ids INTEGER[],
+  created_by_discord_id VARCHAR(20),
+  change_summary TEXT,
+  status VARCHAR(20) DEFAULT 'draft' CHECK (status IN ('draft', 'submitted', 'archived', 'active')),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(case_id, version_number)
+);
+
+CREATE TABLE IF NOT EXISTS appeal_history (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  action VARCHAR(100) NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  changed_by_discord_id VARCHAR(20),
+  change_reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS appeal_learnings (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  what_worked TEXT,
+  what_didnt_work TEXT,
+  key_insights TEXT,
+  recommendations_for_future TEXT,
+  created_by_discord_id VARCHAR(20),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Advanced Features: Audit Logging
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20),
+  action VARCHAR(100) NOT NULL,
+  entity_type VARCHAR(50),
+  entity_id INTEGER,
+  old_values JSONB,
+  new_values JSONB,
+  ip_address VARCHAR(45),
+  user_agent TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Advanced Features: Search Logs
+CREATE TABLE IF NOT EXISTS search_logs (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  search_query TEXT NOT NULL,
+  filters JSONB,
+  results_count INTEGER,
+  execution_time_ms INTEGER,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Advanced Features: Notification Preferences
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) UNIQUE REFERENCES users(discord_id),
+  email_enabled BOOLEAN DEFAULT true,
+  sms_enabled BOOLEAN DEFAULT false,
+  discord_enabled BOOLEAN DEFAULT true,
+  in_app_enabled BOOLEAN DEFAULT true,
+  case_updates BOOLEAN DEFAULT true,
+  compliance_alerts BOOLEAN DEFAULT true,
+  deadline_reminders BOOLEAN DEFAULT true,
+  weekly_digest BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Advanced Features: User Dashboards
+CREATE TABLE IF NOT EXISTS user_dashboards (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  dashboard_name VARCHAR(200) NOT NULL,
+  widgets JSONB NOT NULL,
+  is_default BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Advanced Features: Saved Searches
+CREATE TABLE IF NOT EXISTS saved_searches (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id),
+  search_name VARCHAR(200) NOT NULL,
+  search_query TEXT NOT NULL,
+  filters JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_reports_type ON reports(report_type);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
+CREATE INDEX IF NOT EXISTS idx_export_logs_user ON export_logs(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_history_case ON compliance_score_history(case_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_predictions_case ON compliance_predictions(case_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_benchmarks_type ON compliance_benchmarks(violation_type);
+CREATE INDEX IF NOT EXISTS idx_appeal_versions_case ON appeal_versions(case_id);
+CREATE INDEX IF NOT EXISTS idx_appeal_history_case ON appeal_history(case_id);
+CREATE INDEX IF NOT EXISTS idx_appeal_learnings_case ON appeal_learnings(case_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_search_logs_user ON search_logs(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_notification_prefs_user ON notification_preferences(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_user_dashboards_user ON user_dashboards(user_discord_id);
+CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_discord_id);

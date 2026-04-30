@@ -33,6 +33,12 @@ import analyticsRoutes from './routes/analytics.js';
 import subscriptionsRoutes from './routes/subscriptions.js';
 import complianceRoutes from './routes/compliance.js';
 import internalRoutes from './routes/internal.js';
+import { initReportsRoutes } from './routes/reports.js';
+import { initComplianceRoutes } from './routes/compliance-predictions.js';
+import { initAppealRoutes } from './routes/appeals.js';
+import { initReportsRoutes } from './routes/reports.js';
+import { initComplianceRoutes } from './routes/compliance-predictions.js';
+import { initAppealRoutes } from './routes/appeals.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
@@ -151,6 +157,15 @@ app.use('/api/analytics', requireStaff, analyticsRoutes);
 app.use('/api/subscriptions', requireAuth, subscriptionsRoutes);
 app.use('/api/compliance', requireAuth, complianceRoutes);
 app.use('/internal', internalRoutes);
+
+// Feature 6: Reports & Exports
+app.use('/api/reports', requireAuth, initReportsRoutes(pool));
+
+// Feature 7: Compliance Predictions
+app.use('/api/compliance-predictions', requireAuth, initComplianceRoutes(pool));
+
+// Feature 8: Appeal Versioning
+app.use('/api/appeals', requireAuth, initAppealRoutes(pool));
 
 // Health check
 app.get('/health', async (req, res) => {
