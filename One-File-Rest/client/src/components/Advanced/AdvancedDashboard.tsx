@@ -26,11 +26,11 @@ const AdvancedDashboard: React.FC = () => {
   ]);
 
   const [chartData] = useState<ChartData[]>([
-    { name: 'Week 1', cases: 4, won: 2, denied: 1 },
-    { name: 'Week 2', cases: 6, won: 4, denied: 1 },
-    { name: 'Week 3', cases: 5, won: 3, denied: 2 },
-    { name: 'Week 4', cases: 8, won: 6, denied: 1 },
-    { name: 'Week 5', cases: 7, won: 5, denied: 2 },
+    { name: 'Week 1', value: 4, cases: 4, won: 2, denied: 1 },
+    { name: 'Week 2', value: 6, cases: 6, won: 4, denied: 1 },
+    { name: 'Week 3', value: 5, cases: 5, won: 3, denied: 2 },
+    { name: 'Week 4', value: 8, cases: 8, won: 6, denied: 1 },
+    { name: 'Week 5', value: 7, cases: 7, won: 5, denied: 2 },
   ]);
 
   const [pieData] = useState([
@@ -55,7 +55,7 @@ const AdvancedDashboard: React.FC = () => {
     visible: {
       opacity: 1,
       y: 0,
-      transition: { duration: 0.5, ease: 'easeOut' },
+      transition: { duration: 0.5, ease: 'easeOut' as const },
     },
   };
 

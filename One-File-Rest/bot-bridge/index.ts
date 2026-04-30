@@ -1,19 +1,17 @@
 import express, { Request, Response } from 'express';
-import { Client, EmbedBuilder, ChannelType, PermissionFlagsBits, TextChannel, DMChannel } from 'discord.js';
+import { Client, EmbedBuilder, ChannelType, PermissionFlagsBits, TextChannel } from 'discord.js';
 
 const app = express();
 app.use(express.json());
 
 let discordClient: Client | null = null;
 
-// Initialize Discord client
 export function initializeDiscordClient(client: Client) {
   discordClient = client;
   console.log('✓ Discord client initialized for bot bridge');
 }
 
-// Helper to ensure client is ready
-const ensureClient = (res: Response) => {
+const ensureClient = (res: Response): boolean => {
   if (!discordClient || !discordClient.isReady()) {
     res.status(503).json({ error: 'Discord client not ready' });
     return false;
@@ -21,23 +19,23 @@ const ensureClient = (res: Response) => {
   return true;
 };
 
-/**
- * POST /bot/mirror-message
- * Mirrors a message from portal to Discord channel
- */
-app.post('/bot/mirror-message', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/mirror-message', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { channel_id, sender_name, content, attachments } = req.body;
 
     if (!channel_id || !sender_name || !content) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
     }
 
     const channel = await discordClient!.channels.fetch(channel_id);
     if (!channel || !channel.isTextBased()) {
-      return res.status(404).json({ error: 'Channel not found or not text-based' });
+      res.status(404).json({ error: 'Channel not found or not text-based' });
+      return;
     }
 
     const embed = new EmbedBuilder()
@@ -49,12 +47,12 @@ app.post('/bot/mirror-message', async (req: Request, res: Response) => {
     if (attachments && attachments.length > 0) {
       embed.addFields({
         name: 'Attachments',
-        value: attachments.map((a: any) => `[${a.name}](${a.url})`).join('\n'),
+        value: attachments.map((a: { name: string; url: string }) => `[${a.name}](${a.url})`).join('\n'),
         inline: false
       });
     }
 
-    const message = await channel.send({ embeds: [embed] });
+    const message = await (channel as TextChannel).send({ embeds: [embed] });
     res.json({ success: true, message_id: message.id });
   } catch (err: any) {
     console.error('Error mirroring message:', err);
@@ -62,27 +60,27 @@ app.post('/bot/mirror-message', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/dm
- * Sends a direct message to a Discord user
- */
-app.post('/bot/dm', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/dm', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { discord_id, content, embed_data } = req.body;
 
     if (!discord_id || !content) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
     }
 
     const user = await discordClient!.users.fetch(discord_id);
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'User not found' });
+      return;
     }
 
     const dmChannel = await user.createDM();
-    let messageContent: any = { content };
+    let messageContent: { content?: string; embeds?: EmbedBuilder[] } = { content };
 
     if (embed_data) {
       const embed = new EmbedBuilder()
@@ -105,30 +103,30 @@ app.post('/bot/dm', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/create-channel
- * Creates a new private channel for a case
- */
-app.post('/bot/create-channel', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/create-channel', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { guild_id, client_discord_id, case_id, account_username } = req.body;
 
     if (!guild_id || !client_discord_id || !case_id || !account_username) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
     }
 
     const guild = await discordClient!.guilds.fetch(guild_id);
     if (!guild) {
-      return res.status(404).json({ error: 'Guild not found' });
+      res.status(404).json({ error: 'Guild not found' });
+      return;
     }
 
     const channelName = `case-${case_id}-${account_username.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20)}`;
 
     const channel = await guild.channels.create({
       name: channelName,
-      type: ChannelType.GuildPrivateThread,
+      type: ChannelType.GuildText,
       topic: `Case #${case_id} - ${account_username}`,
       permissionOverwrites: [
         {
@@ -148,7 +146,7 @@ app.post('/bot/create-channel', async (req: Request, res: Response) => {
       .setColor('#5865F2')
       .setTimestamp();
 
-    await channel.send({ embeds: [welcomeEmbed] });
+    await (channel as TextChannel).send({ embeds: [welcomeEmbed] });
 
     res.json({ success: true, channel_id: channel.id });
   } catch (err: any) {
@@ -157,23 +155,23 @@ app.post('/bot/create-channel', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/status-update
- * Posts a status update to a case channel
- */
-app.post('/bot/status-update', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/status-update', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { channel_id, case_id, new_status, message, updated_by } = req.body;
 
     if (!channel_id || !case_id || !new_status) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
     }
 
     const channel = await discordClient!.channels.fetch(channel_id);
     if (!channel || !channel.isTextBased()) {
-      return res.status(404).json({ error: 'Channel not found or not text-based' });
+      res.status(404).json({ error: 'Channel not found or not text-based' });
+      return;
     }
 
     const statusColors: { [key: string]: string } = {
@@ -193,7 +191,7 @@ app.post('/bot/status-update', async (req: Request, res: Response) => {
     const embed = new EmbedBuilder()
       .setTitle(`Case #${case_id} Status Update`)
       .setDescription(message || `Status changed to: **${new_status}**`)
-      .setColor(statusColors[new_status] || '#5865F2')
+      .setColor((statusColors[new_status] || '#5865F2') as `#${string}`)
       .addFields({
         name: 'New Status',
         value: new_status.replace(/_/g, ' ').toUpperCase(),
@@ -210,7 +208,7 @@ app.post('/bot/status-update', async (req: Request, res: Response) => {
 
     embed.setTimestamp();
 
-    const sentMessage = await channel.send({ embeds: [embed] });
+    const sentMessage = await (channel as TextChannel).send({ embeds: [embed] });
     res.json({ success: true, message_id: sentMessage.id });
   } catch (err: any) {
     console.error('Error posting status update:', err);
@@ -218,22 +216,22 @@ app.post('/bot/status-update', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/broadcast-dms
- * Sends DMs to multiple users
- */
-app.post('/bot/broadcast-dms', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/broadcast-dms', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { discord_ids, content, embed_data, title } = req.body;
 
     if (!discord_ids || !Array.isArray(discord_ids) || discord_ids.length === 0) {
-      return res.status(400).json({ error: 'Invalid discord_ids array' });
+      res.status(400).json({ error: 'Invalid discord_ids array' });
+      return;
     }
 
     if (!content && !embed_data) {
-      return res.status(400).json({ error: 'Missing content or embed_data' });
+      res.status(400).json({ error: 'Missing content or embed_data' });
+      return;
     }
 
     const results = {
@@ -247,7 +245,7 @@ app.post('/bot/broadcast-dms', async (req: Request, res: Response) => {
         const user = await discordClient!.users.fetch(discord_id);
         const dmChannel = await user.createDM();
 
-        let messageContent: any = { content };
+        let messageContent: { content?: string; embeds?: EmbedBuilder[] } = { content };
 
         if (embed_data) {
           const embed = new EmbedBuilder()
@@ -280,25 +278,25 @@ app.post('/bot/broadcast-dms', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/webhook-message
- * Sends a message via webhook (for portal updates)
- */
-app.post('/bot/webhook-message', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/webhook-message', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { webhook_url, embed_data, content } = req.body;
 
     if (!webhook_url) {
-      return res.status(400).json({ error: 'Missing webhook_url' });
+      res.status(400).json({ error: 'Missing webhook_url' });
+      return;
     }
 
     if (!content && !embed_data) {
-      return res.status(400).json({ error: 'Missing content or embed_data' });
+      res.status(400).json({ error: 'Missing content or embed_data' });
+      return;
     }
 
-    const messageContent: any = { content };
+    let messageContent: { content?: string; embeds?: EmbedBuilder[] } = { content };
 
     if (embed_data) {
       const embed = new EmbedBuilder()
@@ -334,30 +332,31 @@ app.post('/bot/webhook-message', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/delete-webhook
- * Deletes a webhook
- */
-app.post('/bot/delete-webhook', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/delete-webhook', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { webhook_id, channel_id } = req.body;
 
     if (!webhook_id || !channel_id) {
-      return res.status(400).json({ error: 'Missing webhook_id or channel_id' });
+      res.status(400).json({ error: 'Missing webhook_id or channel_id' });
+      return;
     }
 
     const channel = await discordClient!.channels.fetch(channel_id);
     if (!channel || !channel.isTextBased()) {
-      return res.status(404).json({ error: 'Channel not found' });
+      res.status(404).json({ error: 'Channel not found' });
+      return;
     }
 
-    const webhooks = await channel.fetchWebhooks();
-    const webhook = webhooks.find(w => w.id === webhook_id);
+    const webhooks = await (channel as TextChannel).fetchWebhooks();
+    const webhook = webhooks.find((w: { id: string }) => w.id === webhook_id);
 
     if (!webhook) {
-      return res.status(404).json({ error: 'Webhook not found' });
+      res.status(404).json({ error: 'Webhook not found' });
+      return;
     }
 
     await webhook.delete();
@@ -368,26 +367,26 @@ app.post('/bot/delete-webhook', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /bot/create-webhook
- * Creates a webhook in a channel
- */
-app.post('/bot/create-webhook', async (req: Request, res: Response) => {
-  if (!ensureClient(res)) return;
+app.post('/bot/create-webhook', async (req: Request, res: Response): Promise<void> => {
+  if (!ensureClient(res)) {
+    return;
+  }
 
   try {
     const { channel_id, webhook_name } = req.body;
 
     if (!channel_id) {
-      return res.status(400).json({ error: 'Missing channel_id' });
+      res.status(400).json({ error: 'Missing channel_id' });
+      return;
     }
 
     const channel = await discordClient!.channels.fetch(channel_id);
     if (!channel || !channel.isTextBased()) {
-      return res.status(404).json({ error: 'Channel not found or not text-based' });
+      res.status(404).json({ error: 'Channel not found or not text-based' });
+      return;
     }
 
-    const webhook = await channel.createWebhook({
+    const webhook = await (channel as TextChannel).createWebhook({
       name: webhook_name || 'Portal Updates',
       avatar: 'https://cdn.discordapp.com/embed/avatars/0.png'
     });

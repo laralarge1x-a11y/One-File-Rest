@@ -73,7 +73,7 @@ export async function execute(interaction: any): Promise<void> {
       });
     }
 
-    const [day, month, year] = dateParts.map(p => parseInt(p));
+    const [day, month, year] = dateParts.map((p: string) => parseInt(p));
     const parsedDate = new Date(year, month - 1, day);
 
     if (isNaN(parsedDate.getTime())) {

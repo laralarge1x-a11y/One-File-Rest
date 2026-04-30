@@ -81,9 +81,9 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; requiredRole?: strin
 };
 
 export default function App() {
-  const { user, isLoading } = useAuth();
+  const { user, loading } = useAuth();
 
-  if (isLoading) {
+  if (loading) {
     return <div className="loading">Loading...</div>;
   }
 
@@ -98,7 +98,7 @@ export default function App() {
     );
   }
 
-  const isAdmin = ['support', 'case_manager', 'owner'].includes(user.role);
+  const _isAdmin = ['support', 'case_manager', 'owner'].includes(user.role);
 
   return (
     <Router>
