@@ -1,0 +1,105 @@
+6-04-30 07:50:01.01
+e11a7932
+User
+[0] ✓ Database schema migrated
+2026-04-30 07:55:06.82
+b047a4b8
+System
+system: received signal terminated
+2026-04-30 07:56:54.95
+377626ab
+System
+forwarding local port 5000 to external port 80 (mapped as 1104)
+2026-04-30 07:56:54.95
+377626ab
+System
+metasidecar: loaded enterprise status from environment is_enterprise=false
+
+2026-04-30 07:56:54.95
+377626ab
+System
+starting up user application
+2026-04-30 07:56:55.02
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:55.02
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:56:55.12
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:56:55.12
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:55.18
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:56:55.18
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:55.55
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:56:55.56
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:55.60
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:56:55.61
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:56.13
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:56:56.13
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:58.95
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:56:58.95
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:57:03.13
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:57:03.13
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:57:12.47
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:57:12.47
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:57:14.94
+377626ab
+User
+bash: line 1: tsx: command not found
+2026-04-30 07:57:14.94
+377626ab
+System
+command finished with error [bash -c cd One-File-Rest && NODE_ENV=production tsx server/index.ts]: exit status 127
+2026-04-30 07:57:19.53
+377626ab
+System
+crash loop detected
