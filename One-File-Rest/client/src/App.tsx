@@ -65,9 +65,9 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; requiredRole?: strin
   children,
   requiredRole,
 }) => {
-  const { user, isLoading } = useAuth();
+  const { user, loading } = useAuth();
 
-  if (isLoading) {
+  if (loading) {
     return <div className="loading">Loading...</div>;
   }
 

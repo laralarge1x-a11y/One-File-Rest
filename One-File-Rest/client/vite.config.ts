@@ -5,6 +5,7 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   server: {
+    allowedHosts: ['one-file-rest.replit.app'],
     proxy: {
       '/api': 'http://localhost:3000',
       '/auth': 'http://localhost:3000',

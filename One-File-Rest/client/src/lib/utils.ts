@@ -17,6 +17,13 @@ export const formatDateTime = (date: string | Date): string => {
   });
 };
 
+export const formatTime = (date: string | Date): string => {
+  return new Date(date).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 export const getDaysUntil = (date: string | Date): number => {
   const now = new Date();
   const target = new Date(date);
@@ -160,4 +167,19 @@ export const throttle = <T extends (...args: any[]) => any>(
       setTimeout(() => (inThrottle = false), limit);
     }
   };
+};
+
+// Status utilities
+export const getStatusColor = (status: string): string => {
+  const colors: Record<string, string> = {
+    active: '#10b981',
+    pending: '#f59e0b',
+    resolved: '#3b82f6',
+    rejected: '#ef4444',
+    closed: '#6b7280',
+    open: '#10b981',
+    in_progress: '#f59e0b',
+    completed: '#3b82f6',
+  };
+  return colors[status] || '#6b7280';
 };
