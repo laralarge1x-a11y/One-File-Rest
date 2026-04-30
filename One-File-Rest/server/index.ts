@@ -126,14 +126,11 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve built frontend in production
+// Serve built frontend in production (registered after all API routes)
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/auth') || req.path === '/health') {
-      return next();
-    }
+  app.use((_req, res) => {
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
