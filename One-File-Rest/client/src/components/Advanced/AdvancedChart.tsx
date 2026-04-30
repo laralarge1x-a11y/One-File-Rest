@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'framer-motion';
 import {
   LineChart,
@@ -69,12 +68,6 @@ export const AdvancedChart: React.FC<AdvancedChartProps> = ({
       </div>
     );
   }
-
-  const chartProps = {
-    data,
-    height,
-    margin: { top: 5, right: 30, left: 0, bottom: 5 },
-  };
 
   const renderChart = () => {
     switch (type) {
@@ -148,7 +141,7 @@ export const AdvancedChart: React.FC<AdvancedChartProps> = ({
                 dataKey={dataKey}
                 isAnimationActive={animated}
               >
-                {data.map((entry, index) => (
+                {data.map((_entry, index) => (
                   <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
                 ))}
               </Pie>

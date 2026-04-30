@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useForm, Controller, FieldValues, SubmitHandler } from 'react-hook-form';
 import { z } from 'zod';
@@ -39,7 +39,6 @@ export const AdvancedForm = React.forwardRef<HTMLFormElement, AdvancedFormProps<
     submitText = 'Submit',
     isLoading = false,
     successMessage,
-    errorMessage,
     layout = 'single',
     showValidation = true,
   }, ref) => {
@@ -50,7 +49,6 @@ export const AdvancedForm = React.forwardRef<HTMLFormElement, AdvancedFormProps<
       control,
       handleSubmit,
       formState: { errors, isSubmitting },
-      watch,
     } = useForm({
       resolver: zodResolver(schema),
       mode: 'onChange',
@@ -108,7 +106,7 @@ export const AdvancedForm = React.forwardRef<HTMLFormElement, AdvancedFormProps<
 
         {/* Form Fields */}
         <div className={`grid ${gridClass} gap-6`}>
-          {fields.map((field, idx) => (
+          {fields.map((field) => (
             <FormField
               key={String(field.name)}
               field={field}

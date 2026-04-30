@@ -98,8 +98,6 @@ export default function App() {
     );
   }
 
-  const _isAdmin = ['support', 'case_manager', 'owner'].includes(user.role);
-
   return (
     <Router>
       <Routes>
