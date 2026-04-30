@@ -40,4 +40,5 @@ externalPort = 80
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["bash", "-c", "cd One-File-Rest && npx concurrently \"tsx server/index.ts\" \"cd client && npx vite --host 0.0.0.0 --port 5000\""]
+run = ["bash", "-c", "cd One-File-Rest && NODE_ENV=production tsx server/index.ts"]
+build = ["bash", "-c", "cd One-File-Rest && npm install && cd client && npx vite build"]

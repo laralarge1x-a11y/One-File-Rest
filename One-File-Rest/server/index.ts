@@ -6,6 +6,7 @@ import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import fs from 'fs';
 
 import pool from './db/client.js';
 import { discordStrategy } from './auth/discord.js';
@@ -125,6 +126,18 @@ io.on('connection', (socket) => {
   });
 });
 
+// Serve built frontend in production
+const clientDist = path.join(__dirname, '..', 'client', 'dist');
+if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/auth') || req.path === '/health') {
+      return next();
+    }
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
+
 // Startup
 async function start() {
   try {
@@ -152,7 +165,7 @@ async function start() {
     startDeadlineMonitor(io);
     console.log('✓ Deadline monitor started');
 
-    const PORT = process.env.PORT || 3000;
+    const PORT = process.env.NODE_ENV === 'production' ? 5000 : (process.env.PORT || 3000);
     httpServer.listen(PORT, () => {
       console.log(`✓ Elite Tok Club Portal running on port ${PORT}`);
     });
