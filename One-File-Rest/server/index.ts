@@ -36,9 +36,6 @@ import internalRoutes from './routes/internal.js';
 import { initReportsRoutes } from './routes/reports.js';
 import { initComplianceRoutes } from './routes/compliance-predictions.js';
 import { initAppealRoutes } from './routes/appeals.js';
-import { initReportsRoutes } from './routes/reports.js';
-import { initComplianceRoutes } from './routes/compliance-predictions.js';
-import { initAppealRoutes } from './routes/appeals.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
@@ -191,9 +188,6 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
     persistAuthorization: true,
   },
 }));
-
-// API Documentation
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
 
 // Socket.io
 io.on('connection', (socket) => {

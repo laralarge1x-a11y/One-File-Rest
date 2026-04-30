@@ -2,10 +2,6 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   PermissionFlagsBits,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  WebhookClient,
 } from 'discord.js';
 import pool from '../../server/db/client.js';
 import { PLAN_CONFIG } from '../../shared/plans.js';
@@ -38,7 +34,7 @@ export const data = new SlashCommandBuilder()
       .setRequired(true)
   );
 
-export async function execute(interaction: any) {
+export async function execute(interaction: any): Promise<void> {
   try {
     // Step 1: Validate channel
     if (!interaction.channel || !interaction.channel.isTextBased()) {

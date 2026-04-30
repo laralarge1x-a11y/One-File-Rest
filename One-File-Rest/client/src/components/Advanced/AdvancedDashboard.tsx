@@ -1,207 +1,175 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { GripVertical, X, Plus, Settings } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import './AdvancedDashboard.css';
 
-interface Widget {
-  id: string;
-  type: 'chart' | 'metric' | 'table' | 'list' | 'custom';
-  title: string;
-  size: 'small' | 'medium' | 'large';
-  data?: any;
-  config?: any;
-}
-
-interface AdvancedDashboardProps {
-  widgets: Widget[];
-  onWidgetRemove?: (id: string) => void;
-  onWidgetAdd?: () => void;
-  onWidgetReorder?: (widgets: Widget[]) => void;
-  editable?: boolean;
-  children?: React.ReactNode;
-}
-
-export const AdvancedDashboard: React.FC<AdvancedDashboardProps> = ({
-  widgets,
-  onWidgetRemove,
-  onWidgetAdd,
-  onWidgetReorder,
-  editable = true,
-  children,
-}) => {
-  const [draggedWidget, setDraggedWidget] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState(false);
-
-  const sizeClasses = {
-    small: 'col-span-1 row-span-1',
-    medium: 'col-span-2 row-span-1 md:col-span-2',
-    large: 'col-span-2 row-span-2 md:col-span-3',
-  };
-
-  const handleDragStart = (id: string) => {
-    setDraggedWidget(id);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = (targetId: string) => {
-    if (!draggedWidget || draggedWidget === targetId) return;
-
-    const draggedIndex = widgets.findIndex(w => w.id === draggedWidget);
-    const targetIndex = widgets.findIndex(w => w.id === targetId);
-
-    const newWidgets = [...widgets];
-    [newWidgets[draggedIndex], newWidgets[targetIndex]] = [
-      newWidgets[targetIndex],
-      newWidgets[draggedIndex],
-    ];
-
-    onWidgetReorder?.(newWidgets);
-    setDraggedWidget(null);
-  };
-
-  return (
-    <div className="w-full">
-      {/* Dashboard Header */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-6 flex items-center justify-between"
-      >
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-        {editable && (
-          <div className="flex gap-2">
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setEditMode(!editMode)}
-              className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
-            >
-              <Settings className="h-4 w-4" />
-              {editMode ? 'Done' : 'Edit'}
-            </motion.button>
-            {editMode && (
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={onWidgetAdd}
-                className="flex items-center gap-2 rounded-lg bg-green-500 px-4 py-2 text-white hover:bg-green-600"
-              >
-                <Plus className="h-4 w-4" />
-                Add Widget
-              </motion.button>
-            )}
-          </div>
-        )}
-      </motion.div>
-
-      {/* Widgets Grid */}
-      <motion.div
-        layout
-        className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 auto-rows-max"
-      >
-        <AnimatePresence>
-          {widgets.map((widget) => (
-            <motion.div
-              key={widget.id}
-              layout
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              draggable={editMode}
-              onDragStart={() => handleDragStart(widget.id)}
-              onDragOver={handleDragOver}
-              onDrop={() => handleDrop(widget.id)}
-              className={`${sizeClasses[widget.size]} rounded-lg border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800 ${
-                editMode ? 'cursor-move' : ''
-              } ${draggedWidget === widget.id ? 'opacity-50' : ''}`}
-            >
-              {/* Widget Header */}
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {editMode && (
-                    <GripVertical className="h-5 w-5 text-gray-400" />
-                  )}
-                  <h3 className="font-semibold text-gray-900 dark:text-white">
-                    {widget.title}
-                  </h3>
-                </div>
-                {editMode && (
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => onWidgetRemove?.(widget.id)}
-                    className="text-red-500 hover:text-red-600"
-                  >
-                    <X className="h-5 w-5" />
-                  </motion.button>
-                )}
-              </div>
-
-              {/* Widget Content */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.1 }}
-                className="min-h-48"
-              >
-                {children}
-              </motion.div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </motion.div>
-    </div>
-  );
-};
-
-// Metric Widget Component
-interface MetricWidgetProps {
+interface DashboardMetric {
   label: string;
   value: string | number;
-  change?: number;
-  icon?: React.ReactNode;
-  trend?: 'up' | 'down' | 'neutral';
+  change: number;
+  icon: string;
+  color: string;
 }
 
-export const MetricWidget: React.FC<MetricWidgetProps> = ({
-  label,
-  value,
-  change,
-  icon,
-  trend = 'neutral',
-}) => {
-  const trendColor = {
-    up: 'text-green-500',
-    down: 'text-red-500',
-    neutral: 'text-gray-500',
-  }[trend];
+interface ChartData {
+  name: string;
+  value: number;
+  [key: string]: any;
+}
+
+const AdvancedDashboard: React.FC = () => {
+  const [metrics] = useState<DashboardMetric[]>([
+    { label: 'Active Cases', value: 24, change: 12, icon: '📋', color: '#3498db' },
+    { label: 'Won Appeals', value: 18, change: 8, icon: '✅', color: '#2ecc71' },
+    { label: 'Pending Reviews', value: 7, change: -3, icon: '⏳', color: '#f39c12' },
+    { label: 'Success Rate', value: '75%', change: 5, icon: '📈', color: '#9b59b6' },
+  ]);
+
+  const [chartData] = useState<ChartData[]>([
+    { name: 'Week 1', cases: 4, won: 2, denied: 1 },
+    { name: 'Week 2', cases: 6, won: 4, denied: 1 },
+    { name: 'Week 3', cases: 5, won: 3, denied: 2 },
+    { name: 'Week 4', cases: 8, won: 6, denied: 1 },
+    { name: 'Week 5', cases: 7, won: 5, denied: 2 },
+  ]);
+
+  const [pieData] = useState([
+    { name: 'Won', value: 45, color: '#2ecc71' },
+    { name: 'Pending', value: 35, color: '#f39c12' },
+    { name: 'Denied', value: 20, color: '#e74c3c' },
+  ]);
+
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.1,
+        delayChildren: 0.2,
+      },
+    },
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: {
+      opacity: 1,
+      y: 0,
+      transition: { duration: 0.5, ease: 'easeOut' },
+    },
+  };
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-2"
+      className="advanced-dashboard"
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
     >
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-gray-600 dark:text-gray-400">{label}</span>
-        {icon && <div className="text-2xl">{icon}</div>}
-      </div>
-      <div className="flex items-baseline gap-2">
-        <span className="text-3xl font-bold text-gray-900 dark:text-white">
-          {value}
-        </span>
-        {change !== undefined && (
-          <motion.span
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            className={`text-sm font-semibold ${trendColor}`}
+      <motion.div className="dashboard-header" variants={itemVariants}>
+        <h1>Dashboard</h1>
+        <p>Real-time case management & analytics</p>
+      </motion.div>
+
+      <motion.div className="metrics-grid" variants={containerVariants}>
+        {metrics.map((metric, idx) => (
+          <motion.div
+            key={idx}
+            className="metric-card"
+            variants={itemVariants}
+            whileHover={{ scale: 1.05, boxShadow: '0 20px 40px rgba(0,0,0,0.1)' }}
           >
-            {change > 0 ? '+' : ''}{change}%
-          </motion.span>
-        )}
-      </div>
+            <div className="metric-icon">{metric.icon}</div>
+            <div className="metric-content">
+              <p className="metric-label">{metric.label}</p>
+              <h3 className="metric-value">{metric.value}</h3>
+              <span className={`metric-change ${metric.change >= 0 ? 'positive' : 'negative'}`}>
+                {metric.change >= 0 ? '↑' : '↓'} {Math.abs(metric.change)}%
+              </span>
+            </div>
+            <div className="metric-bar" style={{ backgroundColor: metric.color }}></div>
+          </motion.div>
+        ))}
+      </motion.div>
+
+      <motion.div className="charts-section" variants={containerVariants}>
+        <motion.div className="chart-container" variants={itemVariants}>
+          <h2>Case Trends</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+              <XAxis dataKey="name" stroke="#666" />
+              <YAxis stroke="#666" />
+              <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} />
+              <Legend />
+              <Line type="monotone" dataKey="cases" stroke="#3498db" strokeWidth={2} dot={{ r: 4 }} />
+              <Line type="monotone" dataKey="won" stroke="#2ecc71" strokeWidth={2} dot={{ r: 4 }} />
+              <Line type="monotone" dataKey="denied" stroke="#e74c3c" strokeWidth={2} dot={{ r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </motion.div>
+
+        <motion.div className="chart-container" variants={itemVariants}>
+          <h2>Appeal Success Rate</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <AreaChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+              <XAxis dataKey="name" stroke="#666" />
+              <YAxis stroke="#666" />
+              <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} />
+              <Area type="monotone" dataKey="won" fill="#2ecc71" stroke="#27ae60" fillOpacity={0.6} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </motion.div>
+
+        <motion.div className="chart-container pie-container" variants={itemVariants}>
+          <h2>Case Distribution</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie data={pieData} cx="50%" cy="50%" labelLine={false} label={({ name, value }) => `${name}: ${value}%`} outerRadius={80} fill="#8884d8" dataKey="value">
+                {pieData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.color} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </motion.div>
+
+        <motion.div className="chart-container" variants={itemVariants}>
+          <h2>Weekly Performance</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+              <XAxis dataKey="name" stroke="#666" />
+              <YAxis stroke="#666" />
+              <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} />
+              <Legend />
+              <Bar dataKey="cases" fill="#3498db" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="won" fill="#2ecc71" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="denied" fill="#e74c3c" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </motion.div>
+      </motion.div>
+
+      <motion.div className="recent-activity" variants={itemVariants}>
+        <h2>Recent Activity</h2>
+        <div className="activity-list">
+          {[1, 2, 3, 4, 5].map((item) => (
+            <motion.div key={item} className="activity-item" whileHover={{ x: 5 }} transition={{ duration: 0.2 }}>
+              <div className="activity-dot"></div>
+              <div className="activity-content">
+                <p className="activity-title">Case #{1000 + item} Status Updated</p>
+                <p className="activity-time">2 hours ago</p>
+              </div>
+              <span className="activity-badge">Appeal Submitted</span>
+            </motion.div>
+          ))}
+        </div>
+      </motion.div>
     </motion.div>
   );
 };
+
+export default AdvancedDashboard;

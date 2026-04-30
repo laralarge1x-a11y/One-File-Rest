@@ -27,6 +27,10 @@ export const discordStrategy = new DiscordStrategy(
   },
   async (accessToken: string, refreshToken: string, profile: DiscordProfile, done: (err: Error | null, user?: User | null) => void) => {
     try {
+      if (!profile.id || !profile.username) {
+        return done(new Error('Discord profile missing required fields'));
+      }
+
       const result = await pool.query(
         `INSERT INTO users (discord_id, discord_username, discord_avatar, email)
          VALUES ($1, $2, $3, $4)
@@ -37,7 +41,7 @@ export const discordStrategy = new DiscordStrategy(
            last_active = NOW(),
            updated_at = NOW()
          RETURNING *`,
-        [profile.id, profile.username, profile.avatar, profile.email]
+        [profile.id, profile.username, profile.avatar || null, profile.email || null]
       );
 
       const user = result.rows[0] as User;

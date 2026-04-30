@@ -1,7 +1,5 @@
-import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
-import { useSocket } from './hooks/useSocket';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Layout
@@ -84,7 +82,6 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; requiredRole?: strin
 
 export default function App() {
   const { user, isLoading } = useAuth();
-  const { socket } = useSocket();
 
   if (isLoading) {
     return <div className="loading">Loading...</div>;

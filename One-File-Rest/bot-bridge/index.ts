@@ -1,5 +1,5 @@
 import express, { Request, Response } from 'express';
-import { Client, GatewayIntentBits, EmbedBuilder, ChannelType, PermissionFlagsBits } from 'discord.js';
+import { Client, EmbedBuilder, ChannelType, PermissionFlagsBits, TextChannel, DMChannel } from 'discord.js';
 
 const app = express();
 app.use(express.json());
