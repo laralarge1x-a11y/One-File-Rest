@@ -1,0 +1,152 @@
+Here’s a clean, human-written, detailed version of your prompt that you can give to a developer/designer 👇
+
+---
+
+We’re building this website primarily to manage 100+ clients efficiently. Right now, we handle everything through multiple chats, which makes it very easy to lose track of client issues, progress, and communication. The goal of this platform is to centralize everything so no client is overlooked and every case is properly tracked from start to finish.
+
+However, the current client portal is not meeting these expectations. It feels messy, confusing, and not intuitive. Clients often don’t understand what’s happening with their case, what information they need to provide, or what stage they are in. This creates unnecessary back-and-forth and slows down the process.
+
+We need to redesign the client experience to make it extremely clear, simple, and structured.
+
+---
+
+### Client Side (Portal Improvements)
+
+When a client submits a case, we want the information collection to feel clean, guided, and easy to understand. Instead of dumping everything at once, it should feel like a step-by-step flow.
+
+We need to collect the following information in a structured and user-friendly way:
+
+1. **Account Violations**
+
+   * How many violations are currently on the account?
+
+2. **Violation Details**
+
+   * Screenshot upload option (very important)
+   * Or a simple description field
+
+3. **Purchase Information**
+
+   * Did they purchase the account?
+   * If yes, what changes were made and how soon after purchase?
+
+4. **Previous Appeals**
+
+   * Have they already appealed?
+   * If yes, what message/script was used?
+
+5. **Account Verification**
+
+   * Was the account verified by them?
+
+6. **Additional Context (Important Metrics)**
+
+   * How many videos have they posted (especially with their face)?
+   * Total GMV generated on the account
+   * Total commissions currently frozen
+   * Number of accounts verified under their documents
+
+7. **Service Package Selection**
+   Clearly explain plans:
+
+   * Basic → 1 violation/month
+   * Fortnightly → up to 3 violations
+   * Pro Shield → up to 5 violations
+
+After submission, clients should clearly see:
+
+* Their case status (e.g., Submitted → In Review → Appeal Sent → Waiting for Response → Resolved)
+* All past replies from staff
+* What action is currently pending (from them or from us)
+
+---
+
+### Key Client Experience Improvements
+
+* The UI must be **very clean and easy to understand**
+* Clients should never feel confused about:
+
+  * What’s happening
+  * What they need to do next
+  * What response they received
+* Each case should feel like a **timeline or progress tracker**
+* Add **real-time notifications**:
+
+  * When staff replies → client gets notified instantly
+* Everything should feel structured, not like random messages
+
+---
+
+### Admin Panel (Very Important)
+
+This is where the biggest issue is right now.
+
+The current admin panel is extremely messy and difficult to use. It’s hard to:
+
+* Understand what’s going on in each case
+* See client-uploaded screenshots
+* Quickly identify priority issues
+* Track progress across multiple clients
+
+We need a **complete redesign of the admin experience**.
+
+---
+
+### Admin Panel Requirements
+
+1. **Clean Dashboard**
+
+   * Overview of all active cases
+   * Filters (by status, priority, plan, etc.)
+   * Clear visual indicators (urgent, waiting, completed)
+
+2. **Case View (Very Important)**
+
+   * Full client details in one place
+   * Uploaded screenshots clearly visible
+   * Organized sections (violations, appeals, metrics, etc.)
+   * Chat/messages in a structured format (not messy)
+
+3. **AI Assistance (Advanced Feature)**
+
+   * AI should help summarize the case:
+
+     * “What is the issue?”
+     * “What has been done?”
+     * “What should be done next?”
+   * Suggest possible appeal responses or next steps
+
+4. **Better Workflow**
+
+   * Easy to move cases between stages
+   * Clear action buttons (Reply, Mark Resolved, Request Info, etc.)
+
+5. **Clarity Above All**
+
+   * I should be able to open any case and instantly understand:
+
+     * What the problem is
+     * What the client sent
+     * What we’ve done so far
+     * What needs to happen next
+
+---
+
+### Overall Goal
+
+Both the client portal and admin panel should feel:
+
+* Clean
+* Structured
+* Easy to understand
+* Not overwhelming
+
+Right now, everything feels cluttered and confusing for both clients and staff. We want to transform this into a **professional, advanced, and smooth system** that saves time, reduces confusion, and scales easily as we grow.
+
+---
+
+If you want next step, I can turn this into:
+
+* UI wireframes
+* Exact feature list for developers
+* Or even full frontend structure (React / Next.js)

@@ -18,6 +18,10 @@ author = "agent"
 task = "workflow.run"
 args = "Start application"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Discord bot"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -29,6 +33,17 @@ outputType = "webview"
 task = "shell.exec"
 args = "cd One-File-Rest && npx concurrently \"tsx server/index.ts\" \"cd client && npx vite --host 0.0.0.0 --port 5000\""
 waitForPort = 5000
+
+[[workflows.workflow]]
+name = "Discord bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd One-File-Rest && npx tsx bot/index.ts"
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [[ports]]
 localPort = 3000
