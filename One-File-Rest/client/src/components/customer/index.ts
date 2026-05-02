@@ -6,3 +6,4 @@ export { default as EmptyState } from './EmptyState';
 export { ToastProvider, useToast } from './Toast';
 export { default as CustomerNav } from './CustomerNav';
 export { default as BottomNav } from './BottomNav';
+export { default as NotificationBell } from './NotificationBell';

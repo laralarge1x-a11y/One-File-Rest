@@ -23,7 +23,7 @@ import Subscription from './pages/Subscription';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import ClientList from './pages/admin/ClientList';
 import ClientProfile from './pages/admin/ClientProfile';
-import CaseManagement from './pages/admin/CaseManagement';
+import CaseWorkspace from './pages/admin/CaseWorkspace';
 import TemplateBuilder from './pages/admin/TemplateBuilder';
 import BulkBroadcast from './pages/admin/BulkBroadcast';
 import Analytics from './pages/admin/Analytics';
@@ -93,7 +93,8 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
 
         {/* ── Admin Routes ── */}
         <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/cases"       element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseManagement /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/cases"       element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseWorkspace /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/cases/:id"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseWorkspace /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/clients"     element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientList /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/clients/:id" element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientProfile /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/analytics"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><Analytics /></AdminLayout></ProtectedRoute>} />

@@ -21,11 +21,15 @@ One-File-Rest/
 │   └── src/
 │       ├── components/customer/ # Customer UI kit (PageTransition, GlassCard,
 │       │                        # StatusBadge, LoadingSpinner, EmptyState,
-│       │                        # Toast, CustomerNav, BottomNav)
+│       │                        # Toast, CustomerNav, BottomNav, NotificationBell)
+│       ├── components/case/     # Shared case widgets (CaseTimeline, AISummaryPanel)
 │       ├── components/layout/   # AdminSidebar (legacy Sidebar/Header unused)
 │       ├── hooks/               # useAuth, useSocket, useNotifications
-│       ├── pages/               # Login, Dashboard, Cases, CaseDetail,
-│       │                        # NewCase (3-step wizard), Messages, etc.
+│       ├── pages/               # Login, Dashboard, Cases, CaseDetail (tabbed),
+│       │                        # NewCase (7-step wizard with plan selection),
+│       │                        # Messages, etc.
+│       ├── pages/admin/         # AdminDashboard (with needs-attention queue),
+│       │                        # CaseWorkspace (3-zone), ClientList, etc.
 │       ├── styles/              # design-system.css (dark theme + tokens)
 │       └── App.tsx              # Wraps routes in AnimatePresence + ToastProvider
 ├── server/            # Express backend (port 3000)
@@ -36,6 +40,38 @@ One-File-Rest/
 │   └── index.ts
 └── package.json
 ```
+
+## Key Features
+
+- **Client intake** — `/cases/new` is a 7-step wizard (Violations → Purchase →
+  Prior Appeals → Verification → Metrics → Plan → Review). Progress is
+  autosaved to localStorage (`newcase-wizard-v2`). Screenshots are uploaded as
+  data URLs to `/api/evidence` after the case is created. Plans:
+  `basic_guard`, `fortnightly_defense`, `proshield_creator` — selection
+  persists onto `users.plan` (only when previously empty).
+- **Client case view** — `/cases/:id` shows a status callout, tabbed
+  Timeline / Evidence / Messages, sticky right-side facts panel, and a real
+  REST `POST /api/messages` form. Live updates via socket events
+  `message:new` and `case:status_changed`.
+- **Notifications** — `services/notifications.ts` writes a row in
+  `notifications` and emits `notification:new` to the user's socket room
+  (`user:<discord_id>`). Triggered on case status change, won/denied, and
+  staff replies. Frontend `<NotificationBell />` lives in `CustomerNav`,
+  joins its own socket, shows a badge + dropdown + toast.
+  Endpoints: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
+  `POST /api/notifications/read-all`.
+- **Admin Case Workspace** — `/admin/cases` and `/admin/cases/:id` render
+  `CaseWorkspace.tsx`, a 3-zone view: case list (left), tabbed detail
+  (Overview / Evidence / Messages / Notes / History) with status + priority
+  dropdowns, and an AI side panel (right) showing `AISummaryPanel` +
+  compliance score.
+- **Needs Attention queue** — `GET /api/admin/needs-attention` returns three
+  buckets (deadlines < 24 h, stale > 48 h, unreplied > 12 h). Surfaced at
+  the top of `AdminDashboard`.
+- **Shared widgets** — `components/case/CaseTimeline.tsx` (vertical or
+  horizontal stage list, falls back to a status-derived skeleton) and
+  `components/case/AISummaryPanel.tsx` (per-case in-memory cache; POSTs to
+  `/api/ai/case-summary`).
 
 ## Running the App
 

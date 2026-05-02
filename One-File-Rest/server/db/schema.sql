@@ -95,8 +95,10 @@ CREATE TABLE IF NOT EXISTS case_timeline (
   stage_status VARCHAR(20) DEFAULT 'pending' CHECK (stage_status IN ('pending', 'active', 'complete', 'skipped')),
   notes TEXT,
   created_by_discord_id VARCHAR(20),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
 );
+ALTER TABLE case_timeline ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS onboarding_data (
   id SERIAL PRIMARY KEY,
@@ -112,6 +114,10 @@ CREATE TABLE IF NOT EXISTS onboarding_data (
   raw_onboarding JSONB DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- Backfill columns for upgraded deployments (table must exist first).
+ALTER TABLE onboarding_data ADD COLUMN IF NOT EXISTS raw_onboarding JSONB DEFAULT '{}';
+ALTER TABLE onboarding_data ADD COLUMN IF NOT EXISTS violation_specific_answers JSONB DEFAULT '[]';
+ALTER TABLE onboarding_data ADD COLUMN IF NOT EXISTS prior_appeals JSONB DEFAULT '[]';
 
 CREATE TABLE IF NOT EXISTS messages (
   id SERIAL PRIMARY KEY,
@@ -140,6 +146,8 @@ CREATE TABLE IF NOT EXISTS evidence (
   uploaded_at TIMESTAMPTZ DEFAULT NOW()
 );
 ALTER TABLE evidence ALTER COLUMN cloudinary_public_id DROP NOT NULL;
+ALTER TABLE evidence ALTER COLUMN file_url TYPE TEXT;
+ALTER TABLE evidence ALTER COLUMN thumbnail_url TYPE TEXT;
 
 CREATE TABLE IF NOT EXISTS appeal_templates (
   id SERIAL PRIMARY KEY,
@@ -193,6 +201,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   action_url VARCHAR(200),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- Backfill action_url on existing deployments where the notifications table
+-- predates this column (without it, every createNotification() insert would
+-- fail with `column "action_url" does not exist` and silently drop the
+-- in-app notification + socket emit).
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_url VARCHAR(200);
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS title VARCHAR(200);
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS case_id INTEGER REFERENCES cases(id);
 
 CREATE TABLE IF NOT EXISTS referrals (
   id SERIAL PRIMARY KEY,

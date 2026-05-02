@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import pool from '../db/client.js';
 import { getIO } from '../socket-store.js';
 import { fireWebhook, buildClientMessageEmbed, buildStaffReplyEmbed, logAudit } from '../services/webhook.js';
+import { createNotification } from '../services/notifications.js';
 
 const router = Router();
 
@@ -71,12 +72,20 @@ router.post('/', async (req: Request, res: Response) => {
 
     // Webhook to Discord (non-blocking)
     if (senderType === 'staff') {
-      // Staff reply → fire to case owner
+      // Staff reply → fire to case owner + in-app notification
       fireWebhook(caseOwner.user_discord_id, 'staff_reply', buildStaffReplyEmbed({
         caseId: case_id,
         content,
         staffName: req.user!.discord_username,
       }));
+      createNotification({
+        userDiscordId: caseOwner.user_discord_id,
+        type: 'message',
+        title: `New reply from ${req.user!.discord_username}`,
+        message: content.length > 140 ? content.substring(0, 137) + '...' : content,
+        caseId: case_id,
+        actionUrl: `/cases/${case_id}`,
+      });
     } else {
       // Client message → just log; staff receives it via portal
       logAudit({ actorDiscordId: discordId, action: 'message_sent', targetType: 'case', targetId: case_id }).catch(console.error);
@@ -89,16 +98,67 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-// Mark messages as read
+// Mark messages as read.
+// Authorization:
+//   - Staff/admin (support, case_manager, owner, admin) may mark messages on
+//     any case they can access; in that case we mark CLIENT messages as read
+//     (so the admin "needs attention / unreplied" queue clears).
+//   - Clients may only mark messages on a case they own (cases.discord_id ===
+//     their discord_id); we mark non-client (staff/AI/system) messages as read
+//     for them so their bell/unread badge clears.
+//   - Anyone else gets a 403.
 router.patch('/read/:caseId', async (req: Request, res: Response) => {
   try {
     const { caseId } = req.params;
-    await pool.query(
-      `UPDATE messages SET is_read = true WHERE case_id = $1 AND sender_discord_id != $2`,
-      [caseId, req.user!.discord_id]
+    if (!req.isAuthenticated || !req.isAuthenticated() || !req.user) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const me = req.user;
+    const staffRoles = ['support', 'case_manager', 'owner', 'admin'];
+    const isStaff = staffRoles.includes(me.role);
+
+    const ownership = await pool.query(
+      `SELECT user_discord_id FROM cases WHERE id = $1 LIMIT 1`,
+      [caseId]
     );
+    if (ownership.rowCount === 0) {
+      res.status(404).json({ error: 'Case not found' });
+      return;
+    }
+    const ownerDiscordId: string = ownership.rows[0].user_discord_id;
+    const isOwner = ownerDiscordId === me.discord_id;
+
+    if (!isStaff && !isOwner) {
+      res.status(403).json({ error: 'Forbidden — you do not have access to this case' });
+      return;
+    }
+
+    if (isStaff) {
+      // Staff is reading the conversation — clear unread on inbound (client) messages.
+      await pool.query(
+        `UPDATE messages
+            SET is_read = true
+          WHERE case_id = $1
+            AND is_read = false
+            AND sender_type = 'client'`,
+        [caseId]
+      );
+    } else {
+      // Owning client is reading — clear unread on staff/AI/system messages addressed to them.
+      await pool.query(
+        `UPDATE messages
+            SET is_read = true
+          WHERE case_id = $1
+            AND is_read = false
+            AND sender_discord_id <> $2
+            AND sender_type IN ('staff', 'ai', 'system')`,
+        [caseId, me.discord_id]
+      );
+    }
     res.json({ success: true });
   } catch (err) {
+    console.error('Error marking messages as read:', err);
     res.status(500).json({ error: 'Failed to mark messages as read' });
   }
 });

@@ -1,13 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import io, { Socket } from 'socket.io-client';
 
+type SocketHandler = (data: unknown) => void;
+
 interface UseSocketReturn {
   socket: Socket | null;
   isConnected: boolean;
   joinCase: (caseId: number) => void;
   leaveCase: (caseId: number) => void;
   sendMessage: (caseId: number, content: string, type: string) => void;
-  on: (event: string, callback: (data: any) => void) => void;
+  on: (event: string, callback: SocketHandler) => void;
   off: (event: string) => void;
 }
 
@@ -22,6 +24,7 @@ export function useSocket(): UseSocketReturn {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       reconnectionAttempts: 5,
+      withCredentials: true,
     });
 
     newSocket.on('connect', () => {
@@ -58,7 +61,7 @@ export function useSocket(): UseSocketReturn {
     }
   }, []);
 
-  const on = useCallback((event: string, callback: (data: any) => void) => {
+  const on = useCallback((event: string, callback: SocketHandler) => {
     if (socketRef.current) {
       socketRef.current.on(event, callback);
     }

@@ -27,6 +27,7 @@ import subscriptionsRoutes from './routes/subscriptions.js';
 import complianceRoutes from './routes/compliance.js';
 import adminRoutes from './routes/admin.js';
 import botBridgeRoutes from './routes/botbridge.js';
+import notificationsRoutes from './routes/notifications.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
@@ -87,24 +88,26 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─── Session ──────────────────────────────────────────────────────────────
 const PgSession = pgSession(session);
-app.use(
-  session({
-    store: new PgSession({
-      pool,
-      createTableIfMissing: true,
-      tableName: 'session',
-    }),
-    secret: process.env.SESSION_SECRET!,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    },
-  })
-);
+const sessionMiddleware = session({
+  store: new PgSession({
+    pool,
+    createTableIfMissing: true,
+    tableName: 'session',
+  }),
+  secret: process.env.SESSION_SECRET!,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  },
+});
+app.use(sessionMiddleware);
+
+// Share session with socket.io so we can authenticate sockets from cookies
+io.engine.use(sessionMiddleware);
 
 // ─── Passport ─────────────────────────────────────────────────────────────
 if (discordStrategy) {
@@ -167,6 +170,7 @@ mount('/api/analytics', requireStaff, analyticsRoutes);
 mount('/api/subscriptions', requireAuth, subscriptionsRoutes);
 mount('/api/compliance', requireAuth, complianceRoutes);
 mount('/api/admin', requireStaff, adminRoutes);
+mount('/api/notifications', requireAuth, notificationsRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -180,29 +184,80 @@ app.get('/health', (_req, res) => {
 });
 
 // ─── Socket.io ────────────────────────────────────────────────────────────
-io.on('connection', (socket) => {
-  const userId = (socket.handshake.auth as any)?.userId;
+// Resolve the authenticated user for a socket from its express session.
+// This is the SINGLE source of truth — clients cannot supply their identity.
+async function resolveSocketUser(socket: any): Promise<{ discordId: string; role: string } | null> {
+  const sess = (socket.request as any)?.session;
+  const passportUser = sess?.passport?.user;
+  if (!passportUser) return null;
+  try {
+    const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const r = await pool.query(
+      `SELECT u.discord_id, COALESCE(s.role, u.role, 'client') AS role
+       FROM users u LEFT JOIN staff s ON s.discord_id = u.discord_id
+       WHERE u.discord_id = $1`,
+      [passportUser]
+    );
+    if (r.rows.length === 0) return null;
+    const role = adminIds.includes(passportUser) ? 'admin' : (r.rows[0].role || 'client');
+    return { discordId: r.rows[0].discord_id, role };
+  } catch {
+    return null;
+  }
+}
 
-  socket.on('case:join', (data: { caseId: number } | number) => {
+const STAFF_ROLES = new Set(['support', 'case_manager', 'owner', 'admin']);
+
+io.on('connection', async (socket) => {
+  const authed = await resolveSocketUser(socket);
+  if (!authed) {
+    // Allow the socket to live (some pages do not need auth) but deny privileged joins.
+    socket.disconnect(true);
+    return;
+  }
+  const { discordId, role } = authed;
+  const isStaff = STAFF_ROLES.has(role);
+
+  // Auto-join the user's own private room — clients NEVER pick this.
+  socket.join(`user:${discordId}`);
+  if (isStaff) socket.join('admin');
+
+  // Verify the user owns/has access to a case before joining its room.
+  async function canAccessCase(caseId: number): Promise<boolean> {
+    if (isStaff) return true;
+    try {
+      const r = await pool.query('SELECT user_discord_id FROM cases WHERE id = $1', [caseId]);
+      return r.rows[0]?.user_discord_id === discordId;
+    } catch { return false; }
+  }
+
+  socket.on('case:join', async (data: { caseId: number } | number) => {
     const caseId = typeof data === 'object' ? data.caseId : data;
-    socket.join(`case:${caseId}`);
+    if (!Number.isFinite(Number(caseId))) return;
+    if (await canAccessCase(Number(caseId))) socket.join(`case:${caseId}`);
   });
   socket.on('case:leave', (data: { caseId: number } | number) => {
     const caseId = typeof data === 'object' ? data.caseId : data;
     socket.leave(`case:${caseId}`);
   });
-  socket.on('join:user', (discordId: string) => { socket.join(`user:${discordId}`); });
-  socket.on('join:case', (caseId: number) => { socket.join(`case:${caseId}`); });
-  socket.on('join:admin', () => { socket.join('admin'); });
+  socket.on('join:case', async (caseId: number) => {
+    if (!Number.isFinite(Number(caseId))) return;
+    if (await canAccessCase(Number(caseId))) socket.join(`case:${caseId}`);
+  });
+  // join:user is deprecated and IGNORED — server auto-joins from the session.
+  // Staff-only rooms are gated by role.
+  socket.on('join:admin', () => { if (isStaff) socket.join('admin'); });
   socket.on('join:policy_alerts', () => { socket.join('policy_alerts'); });
 
   socket.on('message:send', async (data: { caseId: number; content: string }) => {
     try {
-      const { caseId, content } = data;
-      if (!userId || !content || !caseId) return;
+      const { caseId, content } = data || ({} as any);
+      if (!content || !Number.isFinite(Number(caseId))) return;
+      if (!(await canAccessCase(Number(caseId)))) return;
+      const senderType = isStaff ? 'staff' : 'client';
       const result = await pool.query(
-        `INSERT INTO messages (case_id, sender_discord_id, sender_type, content) VALUES ($1, $2, 'client', $3) RETURNING *`,
-        [caseId, userId, content]
+        `INSERT INTO messages (case_id, sender_discord_id, sender_type, content) VALUES ($1, $2, $3, $4) RETURNING *`,
+        [caseId, discordId, senderType, content]
       );
       io.to(`case:${caseId}`).emit('message:new', result.rows[0]);
     } catch (err) {

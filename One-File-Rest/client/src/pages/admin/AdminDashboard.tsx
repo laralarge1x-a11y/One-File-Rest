@@ -48,22 +48,28 @@ export default function AdminDashboard() {
   const [activity, setActivity] = useState<any[]>([]);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [recentCases, setRecentCases] = useState<any[]>([]);
+  const [needsAttention, setNeedsAttention] = useState<{ deadlines: any[]; stale: any[]; unreplied: any[] }>({ deadlines: [], stale: [], unreplied: [] });
   const [loading, setLoading] = useState(true);
   const [reportLoading, setReportLoading] = useState(false);
   const [report, setReport] = useState('');
 
   const fetchAll = useCallback(async () => {
     try {
-      const [statsR, activityR, alertsR, casesR] = await Promise.all([
+      const [statsR, activityR, alertsR, casesR, attentionR] = await Promise.all([
         fetch('/api/admin/stats', { credentials: 'include' }),
         fetch('/api/admin/activity', { credentials: 'include' }),
         fetch('/api/admin/alerts', { credentials: 'include' }),
         fetch('/api/admin/cases?limit=10', { credentials: 'include' }),
+        fetch('/api/admin/needs-attention', { credentials: 'include' }),
       ]);
       if (statsR.ok) setStats(await statsR.json());
       if (activityR.ok) setActivity(await activityR.json());
       if (alertsR.ok) setAlerts(await alertsR.json());
       if (casesR.ok) { const d = await casesR.json(); setRecentCases(d.cases || []); }
+      if (attentionR.ok) {
+        const d = await attentionR.json();
+        setNeedsAttention({ deadlines: d.deadlines || [], stale: d.stale || [], unreplied: d.unreplied || [] });
+      }
     } catch (err) { console.error('Dashboard fetch error:', err); }
     finally { setLoading(false); }
   }, []);
@@ -111,6 +117,70 @@ export default function AdminDashboard() {
         </div>
         <div style={{ fontSize: '12px', color: '#444' }}>Auto-refreshing every 10s</div>
       </div>
+
+      {/* Needs Attention */}
+      {(needsAttention.deadlines.length + needsAttention.stale.length + needsAttention.unreplied.length) > 0 && (
+        <div style={{ ...S.card, marginBottom: 24, borderLeft: '3px solid #ED4245' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#ED4245' }}>
+              🚨 Needs Attention
+              <span style={{ marginLeft: 8, fontSize: 11, color: '#888', fontWeight: 500 }}>
+                {needsAttention.deadlines.length} urgent · {needsAttention.stale.length} stale · {needsAttention.unreplied.length} unreplied
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+            {[
+              { title: 'Deadline < 24h', items: needsAttention.deadlines, color: '#ED4245', kind: 'deadline' as const },
+              { title: 'Stale > 12h', items: needsAttention.stale, color: '#F5A623', kind: 'stale' as const },
+              { title: 'New client messages', items: needsAttention.unreplied, color: '#FEE75C', kind: 'unreplied' as const },
+            ].map((bucket) => (
+              <div key={bucket.title} style={{ background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: bucket.color, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+                  {bucket.title} ({bucket.items.length})
+                </div>
+                {bucket.items.length === 0 ? (
+                  <div style={{ color: '#444', fontSize: 12 }}>All clear</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+                    {bucket.items.slice(0, 6).map((c: any) => {
+                      const subtitle =
+                        bucket.kind === 'deadline'
+                          ? <>Deadline <Countdown deadline={c.appeal_deadline} /></>
+                          : bucket.kind === 'stale'
+                            ? `Waiting ${Math.round(Number(c.stale_hours) || 0)}h on staff reply`
+                            : `${c.unread_count || 1} new message${(c.unread_count || 1) === 1 ? '' : 's'}`;
+                      return (
+                        <button key={c.id} onClick={() => navigate(`/admin/cases/${c.id}`)} style={{
+                          textAlign: 'left', padding: 8, borderRadius: 6,
+                          background: '#111', border: '1px solid #1f1f1f', color: '#fff', cursor: 'pointer',
+                        }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            #{c.id} · @{c.account_username || c.discord_username}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#888', marginTop: 3, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {c.violation_type && (
+                              <span style={{ padding: '1px 6px', borderRadius: 4, background: '#1f1f1f', color: '#bbb' }}>
+                                {String(c.violation_type).replace(/_/g, ' ')}
+                              </span>
+                            )}
+                            {c.plan && (
+                              <span style={{ padding: '1px 6px', borderRadius: 4, background: '#1f1f1f', color: '#bbb' }}>
+                                {c.plan}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#666', marginTop: 4 }}>{subtitle}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div style={S.grid6}>
@@ -187,7 +257,7 @@ export default function AdminDashboard() {
             </thead>
             <tbody>
               {recentCases.map((c) => (
-                <tr key={c.id} onClick={() => navigate('/admin/cases')} style={{ cursor: 'pointer', transition: 'background 0.1s' }}
+                <tr key={c.id} onClick={() => navigate(`/admin/cases/${c.id}`)} style={{ cursor: 'pointer', transition: 'background 0.1s' }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = '#151515')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
                   <td style={{ padding: '10px 12px', color: '#666' }}>#{c.id}</td>

@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import pool from '../db/client.js';
 import { fireWebhook, buildBroadcastEmbed, buildRevokeEmbed, logAudit, PLAN_META } from '../services/webhook.js';
 import { groqText } from '../services/groq.js';
+import { createNotification, emitCaseStatusChanged } from '../services/notifications.js';
+import { advanceCaseTimeline } from '../services/timeline.js';
 
 const router = Router();
 
@@ -117,8 +119,12 @@ router.get('/cases', async (req: Request, res: Response) => {
     }
 
     const query = `
-      SELECT c.*, u.discord_username, u.discord_avatar, u.plan,
-             s.name as staff_name, s.role as staff_role
+      SELECT c.*, u.id as user_id, u.discord_username, u.discord_avatar, u.plan,
+             s.name as staff_name, s.role as staff_role,
+             COALESCE((
+               SELECT COUNT(*) FROM messages m
+               WHERE m.case_id = c.id AND m.sender_type = 'client' AND m.is_read = false
+             ), 0)::int AS unread_count
       FROM cases c
       JOIN users u ON c.user_discord_id = u.discord_id
       LEFT JOIN staff s ON c.staff_assigned_id = s.discord_id
@@ -145,9 +151,9 @@ router.get('/cases', async (req: Request, res: Response) => {
 router.get('/cases/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const [caseRes, messagesRes, evidenceRes, notesRes, timelineRes] = await Promise.all([
+    const [caseRes, messagesRes, evidenceRes, notesRes, timelineRes, auditRes, onboardingRes] = await Promise.all([
       pool.query(`
-        SELECT c.*, u.discord_username, u.discord_avatar, u.plan, u.discord_webhook_url,
+        SELECT c.*, u.id as user_id, u.discord_username, u.discord_avatar, u.plan, u.discord_webhook_url,
                s.name as staff_name
         FROM cases c
         JOIN users u ON c.user_discord_id = u.discord_id
@@ -160,10 +166,16 @@ router.get('/cases/:id', async (req: Request, res: Response) => {
         FROM internal_notes n
         LEFT JOIN users u ON n.staff_discord_id = u.discord_id
         WHERE n.case_id = $1 ORDER BY n.created_at DESC`, [id]),
+      pool.query(
+        `SELECT t.*, s.name AS owner_name
+           FROM case_timeline t
+           LEFT JOIN staff s ON t.created_by_discord_id = s.discord_id
+          WHERE t.case_id = $1 ORDER BY t.id ASC`, [id]),
       pool.query(`
         SELECT * FROM audit_log
         WHERE target_type = 'case' AND target_id = $1
         ORDER BY created_at ASC`, [id]),
+      pool.query(`SELECT * FROM onboarding_data WHERE case_id = $1 LIMIT 1`, [id]),
     ]);
     if (caseRes.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
     res.json({
@@ -172,6 +184,8 @@ router.get('/cases/:id', async (req: Request, res: Response) => {
       evidence: evidenceRes.rows,
       internal_notes: notesRes.rows,
       timeline: timelineRes.rows,
+      audit_log: auditRes.rows,
+      onboarding: onboardingRes.rows[0] || null,
     });
   } catch (err) {
     console.error('[admin/cases/:id]', err);
@@ -240,10 +254,91 @@ router.patch('/cases/:id', async (req: Request, res: Response) => {
       });
     }
 
+    // In-app notification + socket + timeline advance
+    if (status && status !== oldCase.status) {
+      await advanceCaseTimeline(parseInt(id), status, staffId);
+      createNotification({
+        userDiscordId: oldCase.user_discord_id,
+        type: 'status_change',
+        title: 'Case Status Updated',
+        message: `Case #${id} moved to "${String(status).replace(/_/g, ' ')}"`,
+        caseId: parseInt(id),
+        actionUrl: `/cases/${id}`,
+      });
+      emitCaseStatusChanged(parseInt(id), { caseId: parseInt(id), oldStatus: oldCase.status, newStatus: status });
+    }
+    if (outcome && ['won', 'denied'].includes(outcome)) {
+      createNotification({
+        userDiscordId: oldCase.user_discord_id,
+        type: 'case_resolved',
+        title: outcome === 'won' ? 'Case Won! 🎉' : 'Case Resolved',
+        message: outcome === 'won' ? `Great news — case #${id} was approved.` : `Case #${id} outcome: denied. See notes.`,
+        caseId: parseInt(id),
+        actionUrl: `/cases/${id}`,
+      });
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
     console.error('[admin/cases/:id PATCH]', err);
     res.status(500).json({ error: 'Failed to update case' });
+  }
+});
+
+// ─── Needs Attention Queue ────────────────────────────────────────────────
+router.get('/needs-attention', async (_req: Request, res: Response) => {
+  try {
+    const [deadlinesRes, staleRes, unrepliedRes] = await Promise.all([
+      pool.query(`
+        SELECT c.id, c.account_username, c.violation_type, c.appeal_deadline, c.status, c.priority,
+               u.discord_username, u.plan,
+               EXTRACT(EPOCH FROM (c.appeal_deadline - NOW()))/3600 AS hours_remaining
+        FROM cases c JOIN users u ON c.user_discord_id = u.discord_id
+        WHERE c.appeal_deadline BETWEEN NOW() AND NOW() + INTERVAL '24 hours'
+          AND c.status NOT IN ('won','denied','closed')
+        ORDER BY c.appeal_deadline ASC LIMIT 25`),
+      // Stale = waiting on a staff reply > 12h.
+      // The latest message in the case is from the client and is older than 12h
+      // (so the client has been waiting >12h without a staff response).
+      pool.query(`
+        SELECT c.id, c.account_username, c.violation_type, c.status, c.priority,
+               u.discord_username, u.plan,
+               m.created_at AS last_client_message,
+               EXTRACT(EPOCH FROM (NOW() - m.created_at))/3600 AS stale_hours
+        FROM cases c
+        JOIN users u ON c.user_discord_id = u.discord_id
+        JOIN LATERAL (
+          SELECT created_at, sender_type FROM messages
+          WHERE case_id = c.id ORDER BY created_at DESC LIMIT 1
+        ) m ON true
+        WHERE m.sender_type = 'client'
+          AND m.created_at < NOW() - INTERVAL '12 hours'
+          AND c.status NOT IN ('won','denied','closed')
+        ORDER BY m.created_at ASC LIMIT 25`),
+      // New client messages = any unread client messages (regardless of age)
+      // surfaced as cases needing attention with their most recent unread.
+      pool.query(`
+        SELECT c.id, c.account_username, c.violation_type, c.status, c.priority,
+               u.discord_username, u.plan,
+               MAX(m.created_at) AS last_client_message,
+               COUNT(m.id)::int AS unread_count
+        FROM cases c
+        JOIN users u ON c.user_discord_id = u.discord_id
+        JOIN messages m ON m.case_id = c.id
+        WHERE m.sender_type = 'client'
+          AND m.is_read = false
+          AND c.status NOT IN ('won','denied','closed')
+        GROUP BY c.id, c.violation_type, c.priority, u.discord_username, u.plan
+        ORDER BY MAX(m.created_at) DESC LIMIT 25`),
+    ]);
+    res.json({
+      deadlines: deadlinesRes.rows,
+      stale: staleRes.rows,
+      unreplied: unrepliedRes.rows,
+    });
+  } catch (err) {
+    console.error('[admin/needs-attention]', err);
+    res.status(500).json({ error: 'Failed to fetch attention queue' });
   }
 });
 

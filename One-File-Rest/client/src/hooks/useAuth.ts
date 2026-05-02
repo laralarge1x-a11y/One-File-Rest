@@ -8,6 +8,9 @@ interface User {
   role: string;
   avatar_url: string;
   created_at: string;
+  plan?: string | null;
+  plan_start?: string | null;
+  plan_expiry?: string | null;
 }
 
 interface AuthContextType {

@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import pool from '../db/client.js';
 import { calculateComplianceScore } from '../services/compliance-score.js';
 import { fireWebhook, buildNewCaseEmbed, buildStatusChangedEmbed, logAudit } from '../services/webhook.js';
+import { createNotification, emitCaseStatusChanged } from '../services/notifications.js';
+import { advanceCaseTimeline } from '../services/timeline.js';
 
 const router = Router();
 
@@ -61,10 +63,15 @@ router.get('/:id', async (req: Request, res: Response) => {
     let complianceScore = null;
     try { complianceScore = await calculateComplianceScore(parseInt(id)); } catch {}
 
-    const [messagesResult, evidenceResult, onboardingResult] = await Promise.all([
+    const [messagesResult, evidenceResult, onboardingResult, timelineResult] = await Promise.all([
       pool.query(`SELECT * FROM messages WHERE case_id = $1 ORDER BY created_at ASC`, [id]),
       pool.query(`SELECT * FROM evidence WHERE case_id = $1 ORDER BY uploaded_at DESC`, [id]),
       pool.query(`SELECT * FROM onboarding_data WHERE case_id = $1 LIMIT 1`, [id]),
+      pool.query(
+        `SELECT t.*, s.name AS owner_name
+           FROM case_timeline t
+           LEFT JOIN staff s ON t.created_by_discord_id = s.discord_id
+          WHERE t.case_id = $1 ORDER BY t.id ASC`, [id]),
     ]);
 
     res.json({
@@ -73,6 +80,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       messages: messagesResult.rows,
       evidence: evidenceResult.rows,
       onboarding: onboardingResult.rows[0] || null,
+      timeline: timelineResult.rows,
     });
   } catch (err) {
     console.error('Error fetching case:', err);
@@ -85,8 +93,14 @@ router.post('/', async (req: Request, res: Response) => {
     const discordId = req.user?.discord_id;
     const {
       accountUsername, violationType, violationDescription,
-      appealDeadline, totalGMV, faceVideosPosted, commissionFrozen, accountPurchaseDate,
+      appealDeadline, totalGMV, faceVideosPosted, commissionFrozen, commissionFrozenAmount, accountPurchaseDate,
+      // wizard payload
+      wizard, selectedPlan,
     } = req.body;
+    const frozenAmount = Number(
+      commissionFrozenAmount ?? wizard?.metrics?.commissionFrozenAmount ?? 0
+    ) || 0;
+    const isFrozen = frozenAmount > 0 || commissionFrozen === true || wizard?.metrics?.commissionFrozen === true;
 
     if (!accountUsername || !violationType) return res.status(400).json({ error: 'Missing required fields' });
 
@@ -95,17 +109,63 @@ router.post('/', async (req: Request, res: Response) => {
         user_discord_id, account_username, violation_type, violation_description,
         appeal_deadline, commission_frozen, status, priority, created_at, updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'normal', NOW(), NOW()) RETURNING *`,
-      [discordId, accountUsername, violationType, violationDescription, appealDeadline || null, commissionFrozen || false]
+      [discordId, accountUsername, violationType, violationDescription, appealDeadline || null, isFrozen]
     );
     const newCase = result.rows[0];
 
-    if (totalGMV !== undefined || faceVideosPosted !== undefined || accountPurchaseDate) {
-      pool.query(
-        `INSERT INTO onboarding_data (case_id, user_discord_id, total_gmv, face_videos_posted, account_purchase_date, commission_frozen)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [newCase.id, discordId, totalGMV || 0, faceVideosPosted || 0, accountPurchaseDate || null, commissionFrozen || false]
-      ).catch(console.error);
+    // Persist onboarding wizard payload + seed timeline.
+    // Both are awaited so the response only resolves after the related rows
+    // have actually been written; otherwise the client would redirect to a
+    // case detail page that may be missing intake/timeline data.
+    const rawOnboarding = wizard || {};
+    const violationAnswers = wizard?.violations || [];
+    const metrics = wizard?.metrics || {};
+    try {
+      await Promise.all([
+        pool.query(
+          `INSERT INTO onboarding_data (
+             case_id, user_discord_id, total_gmv, face_videos_posted,
+             account_purchase_date, commission_frozen, prior_appeals,
+             violation_specific_answers, raw_onboarding
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            newCase.id, discordId,
+            metrics.totalGMV ?? totalGMV ?? 0,
+            metrics.faceVideos ?? faceVideosPosted ?? 0,
+            wizard?.purchase?.accountPurchaseDate ?? accountPurchaseDate ?? null,
+            isFrozen,
+            JSON.stringify(wizard?.previousAppeals ? [wizard.previousAppeals] : []),
+            JSON.stringify(violationAnswers),
+            JSON.stringify(rawOnboarding),
+          ]
+        ),
+        // Seed timeline — Submitted is the active stage at creation
+        // (case status starts as 'pending'), which matches the client callout.
+        pool.query(
+          `INSERT INTO case_timeline (case_id, stage_name, stage_status) VALUES
+             ($1, 'Submitted', 'active'),
+             ($1, 'In Review', 'pending'),
+             ($1, 'Appeal Drafted', 'pending'),
+             ($1, 'Appeal Sent', 'pending'),
+             ($1, 'Awaiting TikTok', 'pending'),
+             ($1, 'Resolved', 'pending')`,
+          [newCase.id]
+        ),
+      ]);
+    } catch (persistErr) {
+      console.error('Case auxiliary persistence failed:', persistErr);
+      return res.status(500).json({
+        error: 'Case created but intake/timeline failed to save. Please contact support.',
+        case_id: newCase.id,
+      });
     }
+
+    // NOTE: We deliberately do NOT touch users.plan here. `users.plan` is the
+    // billing/entitlement signal and must only change through the admin-managed
+    // billing flow. The wizard's `selectedPlan` is captured as intake metadata
+    // (already persisted inside onboarding_data.raw_onboarding above) so staff
+    // can see what the client picked, but it does not grant entitlement.
+    void selectedPlan;
 
     let complianceScore = null;
     try { complianceScore = await calculateComplianceScore(newCase.id); } catch {}
@@ -140,14 +200,32 @@ router.patch('/:id', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
+    // Workflow fields (status / priority / outcome / outcome_notes) drive
+    // timeline advancement, client notifications, and webhooks. Only staff
+    // may mutate them; if a non-staff client owner sends those fields we
+    // reject the request rather than silently dropping them.
+    if (!isStaff && (
+      status !== undefined ||
+      priority !== undefined ||
+      outcome !== undefined ||
+      outcome_notes !== undefined
+    )) {
+      return res.status(403).json({
+        error: 'Only staff may change case status, priority, or outcome.',
+      });
+    }
+
     const updates: string[] = [];
     const values: any[] = [];
     let p = 1;
-    if (status !== undefined) { updates.push(`status = $${p++}`); values.push(status); }
-    if (priority !== undefined) { updates.push(`priority = $${p++}`); values.push(priority); }
-    if (appealDeadline !== undefined) { updates.push(`appeal_deadline = $${p++}`); values.push(appealDeadline); }
-    if (outcome !== undefined) { updates.push(`outcome = $${p++}`); values.push(outcome); }
-    if (outcome_notes !== undefined) { updates.push(`outcome_notes = $${p++}`); values.push(outcome_notes); }
+    if (isStaff && status !== undefined)        { updates.push(`status = $${p++}`); values.push(status); }
+    if (isStaff && priority !== undefined)      { updates.push(`priority = $${p++}`); values.push(priority); }
+    if (appealDeadline !== undefined)           { updates.push(`appeal_deadline = $${p++}`); values.push(appealDeadline); }
+    if (isStaff && outcome !== undefined)       { updates.push(`outcome = $${p++}`); values.push(outcome); }
+    if (isStaff && outcome_notes !== undefined) { updates.push(`outcome_notes = $${p++}`); values.push(outcome_notes); }
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No updatable fields provided.' });
+    }
     updates.push('updated_at = NOW()');
     values.push(id);
 
@@ -178,6 +256,22 @@ router.patch('/:id', async (req: Request, res: Response) => {
       });
     }
     logAudit({ actorDiscordId: discordId, action: 'case_updated', targetType: 'case', targetId: parseInt(id), details: { status, outcome } }).catch(console.error);
+
+    // In-app notification + socket broadcast (status change)
+    if (status && status !== oldCase.status) {
+      await advanceCaseTimeline(parseInt(id), status, discordId ?? null);
+    }
+    if (status && status !== oldCase.status && isStaff) {
+      createNotification({
+        userDiscordId: oldCase.user_discord_id,
+        type: 'status_change',
+        title: 'Case Status Updated',
+        message: `Case #${id} moved to "${status.replace(/_/g, ' ')}"`,
+        caseId: parseInt(id),
+        actionUrl: `/cases/${id}`,
+      });
+      emitCaseStatusChanged(parseInt(id), { caseId: parseInt(id), oldStatus: oldCase.status, newStatus: status });
+    }
 
     res.json(result.rows[0]);
   } catch (err) {

@@ -1,110 +1,220 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { GlassCard, useToast } from '../components/customer';
+import { useAuth } from '../hooks/useAuth';
 
 const VIOLATION_TYPES = [
-  { value: 'banned_account',     label: 'Banned Account',     icon: '🚫' },
-  { value: 'suspended_account',  label: 'Suspended Account',  icon: '⏸️' },
-  { value: 'commission_frozen',  label: 'Commission Frozen',  icon: '🧊' },
-  { value: 'shop_restricted',    label: 'Shop Restricted',    icon: '🛒' },
-  { value: 'content_violation',  label: 'Content Violation',  icon: '⚠️' },
-  { value: 'other',              label: 'Other',              icon: '❓' },
+  { value: 'banned_account',    label: 'Banned Account',    icon: '🚫' },
+  { value: 'suspended_account', label: 'Suspended Account', icon: '⏸️' },
+  { value: 'commission_frozen', label: 'Commission Frozen', icon: '🧊' },
+  { value: 'shop_restricted',   label: 'Shop Restricted',   icon: '🛒' },
+  { value: 'content_violation', label: 'Content Violation', icon: '⚠️' },
+  { value: 'other',             label: 'Other',             icon: '❓' },
 ];
 
-interface FormData {
-  accountUsername: string;
-  violationType: string;
-  platform: 'tiktok' | 'tiktok_shop';
-  violationDescription: string;
-  appealDeadline: string;
-  totalGMV: string;
+const PLANS = [
+  {
+    value: 'basic_guard',
+    name: 'Basic Guard',
+    price: 49,
+    cadence: 'one-time',
+    color: '#5865F2',
+    features: ['Single appeal handled by our team', 'Discord support during business hours', 'Basic compliance scan'],
+    recommended: false,
+  },
+  {
+    value: 'fortnightly_defense',
+    name: 'Fortnightly Defense',
+    price: 99,
+    cadence: '/ 2 weeks',
+    color: '#57F287',
+    features: ['Up to 3 appeals per cycle', 'Priority Discord support', 'Weekly compliance reports', 'AI-drafted appeals'],
+    recommended: true,
+  },
+  {
+    value: 'proshield_creator',
+    name: 'ProShield Creator',
+    price: 249,
+    cadence: '/ month',
+    color: '#FFD700',
+    features: ['Unlimited appeals', 'Dedicated case manager', 'Real-time policy alerts', 'Account audit & coaching', 'White-glove onboarding'],
+    recommended: false,
+  },
+  {
+    value: 'choose_later',
+    name: "I'll choose later",
+    price: 0,
+    cadence: 'free intake',
+    color: '#888888',
+    features: ['Submit your case now', 'Pick a plan after our team reviews it', 'No charge until you confirm a plan'],
+    recommended: false,
+  },
+];
+
+interface ViolationItem {
+  files: { id: string; name: string; size: number; dataUrl: string; type: string }[];
+  description: string;
 }
 
-interface UploadFile { id: string; file: File; }
+interface WizardData {
+  // step 1
+  accountUsername: string;
+  violationType: string;
+  appealDeadline: string;
+  violationCount: number;
+  violations: ViolationItem[];
+  // step 2 - purchase
+  purchase: {
+    wasPurchased: boolean | null;
+    accountPurchaseDate: string;
+    changesMade: string;
+    timeAfterPurchase: string;
+  };
+  // step 3 - prior appeals
+  previousAppeals: {
+    appealedBefore: boolean | null;
+    previousScript: string;
+  };
+  // step 4 - verification
+  verification: {
+    verifiedBySelf: boolean | null;
+    notes: string;
+  };
+  // step 5 - metrics
+  metrics: {
+    faceVideos: number;
+    totalGMV: number;
+    commissionFrozenAmount: number;
+    accountsUnderDocs: number;
+  };
+  // step 6 - plan
+  selectedPlan: string;
+}
 
-const FloatingInput: React.FC<{
-  label: string; name: string; value: string; type?: string;
-  onChange: (v: string) => void; required?: boolean; error?: string; maxLength?: number;
-}> = ({ label, name, value, type = 'text', onChange, required, error, maxLength }) => (
-  <div style={{ position: 'relative', marginBottom: 4 }}>
-    <input
-      id={name} name={name} type={type} value={value} required={required} maxLength={maxLength}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder=" "
-      className={`field floating ${error ? 'shake' : ''}`}
-      style={{
-        paddingTop: 22, paddingBottom: 8,
-        borderColor: error ? 'var(--danger)' : undefined,
-      }}
-    />
-    <label htmlFor={name} style={{
-      position: 'absolute', left: 14,
-      top: value ? 8 : 16,
-      fontSize: value ? 11 : 14,
-      color: value ? 'var(--text-muted)' : 'var(--text-secondary)',
-      pointerEvents: 'none', transition: 'all 0.2s ease',
-      letterSpacing: value ? 0.4 : 0,
-      textTransform: value ? 'uppercase' : 'none',
-      fontWeight: value ? 600 : 400,
-    }}>{label}{required ? ' *' : ''}</label>
-    {error && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
-    <style>{`
-      .field.floating:focus + label { top: 8px; font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
-    `}</style>
-  </div>
-);
+const STORAGE_KEY = 'newcase-wizard-v2';
+
+const empty = (): WizardData => ({
+  accountUsername: '', violationType: '', appealDeadline: '',
+  violationCount: 1,
+  violations: [{ files: [], description: '' }],
+  purchase: { wasPurchased: null, accountPurchaseDate: '', changesMade: '', timeAfterPurchase: '' },
+  previousAppeals: { appealedBefore: null, previousScript: '' },
+  verification: { verifiedBySelf: null, notes: '' },
+  metrics: { faceVideos: 0, totalGMV: 0, commissionFrozenAmount: 0, accountsUnderDocs: 0 },
+  selectedPlan: '',
+});
+
+const STEPS = [
+  { key: 'violations', label: 'Violations' },
+  { key: 'purchase',   label: 'Purchase' },
+  { key: 'appeals',    label: 'Prior Appeals' },
+  { key: 'verify',     label: 'Verification' },
+  { key: 'metrics',    label: 'Metrics' },
+  { key: 'plan',       label: 'Plan' },
+  { key: 'review',     label: 'Review' },
+];
+
+const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result as string);
+  reader.onerror = reject;
+  reader.readAsDataURL(file);
+});
 
 export default function NewCase() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
+  const currentPlan = user?.plan || null;
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [files, setFiles] = useState<UploadFile[]>([]);
-  const [dragOver, setDragOver] = useState(false);
-  const [data, setData] = useState<FormData>({
-    accountUsername: '',
-    violationType: '',
-    platform: 'tiktok_shop',
-    violationDescription: '',
-    appealDeadline: '',
-    totalGMV: '',
+  const [data, setData] = useState<WizardData>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) return { ...empty(), ...JSON.parse(raw) };
+    } catch {}
+    return empty();
   });
 
-  const update = (k: keyof FormData, v: string) => setData((d) => ({ ...d, [k]: v }));
+  // Autosave (strip large screenshot data URLs — they're transient and can
+  // easily blow past the localStorage 5–10MB quota, which would silently
+  // stop autosave for the rest of the wizard).
+  useEffect(() => {
+    try {
+      const safe = {
+        ...data,
+        violations: data.violations.map((v) => ({
+          ...v,
+          files: v.files.map(({ id, name, size, type }) => ({
+            id, name, size, type, dataUrl: '',
+          })),
+        })),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
+    } catch { /* quota exceeded — autosave skipped */ }
+  }, [data]);
 
-  const validateStep1 = () => {
+  const update = <K extends keyof WizardData>(k: K, v: WizardData[K]) => setData((d) => ({ ...d, [k]: v }));
+  const updateNested = <G extends 'purchase' | 'previousAppeals' | 'verification' | 'metrics'>(
+    group: G, patch: Partial<WizardData[G]>,
+  ) => setData((d) => ({ ...d, [group]: { ...d[group], ...patch } }));
+
+  const setViolationCount = (n: number) => {
+    const count = Math.max(1, Math.min(10, n));
+    setData((d) => {
+      const next = [...d.violations];
+      while (next.length < count) next.push({ files: [], description: '' });
+      while (next.length > count) next.pop();
+      return { ...d, violationCount: count, violations: next };
+    });
+  };
+
+  const updateViolation = (i: number, patch: Partial<ViolationItem>) => {
+    setData((d) => {
+      const next = [...d.violations];
+      next[i] = { ...next[i], ...patch };
+      return { ...d, violations: next };
+    });
+  };
+
+  const MAX_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MB per file (data-URL + JSON envelope must fit server's 10 MB limit)
+  const addFiles = async (i: number, list: File[]) => {
+    const accepted = list.filter((f) => f.size <= MAX_UPLOAD_BYTES).slice(0, 8);
+    if (list.some((f) => f.size > MAX_UPLOAD_BYTES)) toast('A file exceeded the 4 MB upload limit', 'error');
+    const converted = await Promise.all(accepted.map(async (f) => ({
+      id: `${Date.now()}-${f.name}-${Math.random()}`,
+      name: f.name, size: f.size, type: f.type,
+      dataUrl: await fileToDataUrl(f),
+    })));
+    updateViolation(i, { files: [...data.violations[i].files, ...converted].slice(0, 8) });
+  };
+
+  const validate = (s: number): boolean => {
     const e: Record<string, string> = {};
-    if (!data.accountUsername.trim()) e.accountUsername = 'Required';
-    if (!data.violationType) e.violationType = 'Pick a violation type';
-    if (!data.appealDeadline) e.appealDeadline = 'Required';
-    if (data.violationDescription.length > 1000) e.violationDescription = 'Max 1000 characters';
-    setErrors(e); return Object.keys(e).length === 0;
+    if (s === 0) {
+      if (!data.accountUsername.trim()) e.accountUsername = 'Required';
+      if (!data.violationType) e.violationType = 'Pick a violation type';
+      if (!data.appealDeadline) e.appealDeadline = 'Required';
+      data.violations.forEach((v, i) => {
+        if (!v.description.trim()) e[`v${i}_desc`] = 'Describe this violation';
+      });
+    }
+    if (s === 1 && data.purchase.wasPurchased === null) e.wasPurchased = 'Please answer';
+    if (s === 2 && data.previousAppeals.appealedBefore === null) e.appealedBefore = 'Please answer';
+    if (s === 3 && data.verification.verifiedBySelf === null) e.verifiedBySelf = 'Please answer';
+    if (s === 5 && !data.selectedPlan) e.selectedPlan = 'Choose a plan to continue';
+    setErrors(e);
+    return Object.keys(e).length === 0;
   };
 
-  const next = () => {
-    if (step === 0 && !validateStep1()) return;
-    setStep((s) => Math.min(2, s + 1));
-  };
+  const next = () => { if (validate(step)) setStep((s) => Math.min(STEPS.length - 1, s + 1)); };
   const prev = () => setStep((s) => Math.max(0, s - 1));
 
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault(); setDragOver(false);
-    const list = Array.from(e.dataTransfer.files);
-    addFiles(list);
-  };
-  const addFiles = (list: File[]) => {
-    const remaining = Math.max(0, 10 - files.length);
-    const oversized = list.filter((f) => f.size > 10 * 1024 * 1024);
-    if (oversized.length) toast(`${oversized[0].name} is over 10 MB`, 'error');
-    const accepted = list.filter((f) => f.size <= 10 * 1024 * 1024).slice(0, remaining);
-    const next = accepted.map((f) => ({ id: `${Date.now()}-${f.name}-${Math.random()}`, file: f }));
-    setFiles((prev) => [...prev, ...next]);
-  };
-
   const submit = async () => {
+    if (!validate(0)) { setStep(0); return; }
     setSubmitting(true);
     try {
       const r = await fetch('/api/cases', {
@@ -113,292 +223,342 @@ export default function NewCase() {
         body: JSON.stringify({
           accountUsername: data.accountUsername,
           violationType: data.violationType,
-          violationDescription: data.violationDescription,
+          violationDescription: data.violations.map((v, i) => `Violation ${i + 1}: ${v.description}`).join('\n\n'),
           appealDeadline: data.appealDeadline,
-          totalGMV: parseFloat(data.totalGMV) || 0,
-          faceVideosPosted: 0,
-          commissionFrozen: false,
-          accountPurchaseDate: null,
+          totalGMV: data.metrics.totalGMV || 0,
+          faceVideosPosted: data.metrics.faceVideos || 0,
+          commissionFrozen: (data.metrics.commissionFrozenAmount || 0) > 0,
+          commissionFrozenAmount: data.metrics.commissionFrozenAmount || 0,
+          accountPurchaseDate: data.purchase.accountPurchaseDate || null,
+          selectedPlan: data.selectedPlan || null,
+          wizard: {
+            ...data,
+            violations: data.violations.map((v) => ({
+              description: v.description,
+              screenshots: v.files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
+            })),
+          },
         }),
       });
       if (!r.ok) throw new Error('Failed to create case');
       const newCase = await r.json();
+
+      // Upload screenshots as evidence (data URLs). Surface failures so files
+      // are not silently dropped — file storage is a known follow-up.
+      const allFiles = data.violations.flatMap((v, vi) => v.files.map((f) => ({ ...f, vi })));
+      const results = await Promise.all(allFiles.map(async (f) => {
+        try {
+          const ev = await fetch('/api/evidence', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              case_id: newCase.id,
+              file_url: f.dataUrl,
+              file_name: f.name,
+              file_type: f.type,
+              description: `Violation ${f.vi + 1} screenshot`,
+            }),
+          });
+          return { ok: ev.ok, name: f.name };
+        } catch {
+          return { ok: false, name: f.name };
+        }
+      }));
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length > 0) {
+        toast(`${failed.length} of ${results.length} screenshot(s) failed to upload: ${failed.map((f) => f.name).join(', ')}`, 'error');
+      }
+
       setSuccess(true);
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
       toast('Case submitted successfully', 'success');
       setTimeout(() => navigate(`/cases/${newCase.id}`), 1100);
-    } catch (e: any) {
-      toast(e.message || 'Could not create case', 'error');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not create case', 'error');
       setSubmitting(false);
     }
   };
 
-  const STEPS = ['Case Details', 'Evidence', 'Review'];
-
   return (
-    <div className="page-wrap" style={{ maxWidth: 760 }}>
+    <div className="page-wrap" style={{ maxWidth: 820 }}>
       <button onClick={() => navigate('/dashboard')} style={{
         marginBottom: 18, color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600,
       }}>← Back to Dashboard</button>
 
       <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: -0.5 }}>Submit a New Case</h1>
       <p style={{ margin: '6px 0 24px', color: 'var(--text-secondary)', fontSize: 14 }}>
-        Tell us about your TikTok violation and our team will start working on the appeal.
+        Walk us through the violation. Your progress saves automatically.
       </p>
 
-      <GlassCard noHover style={{ padding: 18, marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {STEPS.map((label, i) => {
-            const active = i === step;
-            const done = i < step || success;
+      <GlassCard noHover style={{ padding: 16, marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, overflowX: 'auto' }}>
+          {STEPS.map((s, i) => {
+            const active = i === step, done = i < step || success;
             return (
-              <React.Fragment key={label}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                  <motion.div
-                    animate={{
-                      background: done ? 'var(--success)' : active ? 'var(--accent)' : 'var(--bg-glass)',
-                      borderColor: done ? 'var(--success)' : active ? 'var(--accent)' : 'var(--border)',
-                    }}
-                    style={{
-                      width: 30, height: 30, borderRadius: '50%',
-                      border: '1px solid var(--border)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 13, fontWeight: 700,
-                      color: (done || active) ? '#fff' : 'var(--text-muted)',
-                    }}
-                  >
-                    {done ? '✓' : i + 1}
-                  </motion.div>
+              <React.Fragment key={s.key}>
+                <button onClick={() => i < step && setStep(i)} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+                  background: 'transparent', border: 'none', cursor: i < step ? 'pointer' : 'default',
+                  padding: 4,
+                }}>
+                  <div style={{
+                    width: 26, height: 26, borderRadius: '50%',
+                    background: done ? 'var(--success)' : active ? 'var(--accent)' : 'var(--bg-glass)',
+                    border: `1px solid ${done ? 'var(--success)' : active ? 'var(--accent)' : 'var(--border)'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 11, fontWeight: 700,
+                    color: (done || active) ? '#fff' : 'var(--text-muted)',
+                  }}>{done ? '✓' : i + 1}</div>
                   <span className="step-label" style={{
-                    fontSize: 13, fontWeight: 600,
+                    fontSize: 12, fontWeight: 600,
                     color: active ? 'var(--text-primary)' : 'var(--text-muted)',
-                    whiteSpace: 'nowrap',
-                  }}>{label}</span>
-                </div>
+                  }}>{s.label}</span>
+                </button>
                 {i < STEPS.length - 1 && (
-                  <div style={{ flex: 1, height: 2, background: 'var(--border)', borderRadius: 2, position: 'relative', minWidth: 20 }}>
-                    <motion.div
-                      initial={{ width: '0%' }}
-                      animate={{ width: i < step ? '100%' : '0%' }}
-                      transition={{ duration: 0.4 }}
-                      style={{ position: 'absolute', inset: 0, background: 'var(--success)', borderRadius: 2 }}
-                    />
-                  </div>
+                  <div style={{ flex: 1, height: 1, minWidth: 12, background: i < step ? 'var(--success)' : 'var(--border)' }} />
                 )}
               </React.Fragment>
             );
           })}
         </div>
-        <style>{`
-          @media (max-width: 540px) {
-            .step-label { display: none; }
-          }
-        `}</style>
+        <style>{`@media (max-width: 640px) { .step-label { display: none; } }`}</style>
       </GlassCard>
 
-      <GlassCard noHover style={{ padding: 24, minHeight: 360 }}>
+      <GlassCard noHover style={{ padding: 24, minHeight: 400 }}>
         <AnimatePresence mode="wait">
-          {step === 0 && (
-            <motion.div key="step1"
-              initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
-              transition={{ duration: 0.25 }}
-            >
-              <h3 style={{ margin: '0 0 18px', fontSize: 18, fontWeight: 700 }}>Case Details</h3>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <FloatingInput
-                  label="TikTok Account Username" name="accountUsername"
-                  value={data.accountUsername} onChange={(v) => update('accountUsername', v)}
-                  required error={errors.accountUsername}
-                />
-
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 8, letterSpacing: 0.4 }}>Platform</div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {[
-                      { value: 'tiktok', label: 'TikTok' },
-                      { value: 'tiktok_shop', label: 'TikTok Shop' },
-                    ].map((p) => (
-                      <button key={p.value} onClick={() => update('platform', p.value)} type="button" style={{
-                        flex: 1, height: 42, borderRadius: 10,
-                        background: data.platform === p.value ? 'var(--accent)' : 'var(--bg-glass)',
-                        border: `1px solid ${data.platform === p.value ? 'var(--accent)' : 'var(--border)'}`,
-                        color: data.platform === p.value ? '#fff' : 'var(--text-primary)',
-                        fontWeight: 600, fontSize: 13, transition: 'var(--transition)',
-                      }}>{p.label}</button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 8, letterSpacing: 0.4 }}>Violation Type *</div>
+          <motion.div key={step}
+            initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
+            transition={{ duration: 0.22 }}
+          >
+            {step === 0 && (
+              <Section title="Violation Details" subtitle="Tell us about your TikTok account and what happened.">
+                <Field label="TikTok Account Username *" error={errors.accountUsername}>
+                  <input className="field" value={data.accountUsername}
+                    onChange={(e) => update('accountUsername', e.target.value)}
+                    placeholder="@username" />
+                </Field>
+                <Field label="Violation Type *" error={errors.violationType}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
                     {VIOLATION_TYPES.map((v) => {
                       const active = data.violationType === v.value;
                       return (
                         <button key={v.value} type="button" onClick={() => update('violationType', v.value)} style={{
-                          padding: '12px 14px', borderRadius: 10,
+                          padding: '10px 14px', borderRadius: 10,
                           background: active ? 'rgba(88,101,242,0.15)' : 'var(--bg-glass)',
                           border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                          textAlign: 'left',
-                          display: 'flex', alignItems: 'center', gap: 10,
+                          textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10,
                           color: 'var(--text-primary)', fontSize: 13, fontWeight: 500,
-                          transition: 'var(--transition)',
                         }}>
                           <span style={{ fontSize: 18 }}>{v.icon}</span>{v.label}
                         </button>
                       );
                     })}
                   </div>
-                  {errors.violationType && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--danger)' }}>{errors.violationType}</div>}
-                </div>
-
-                <FloatingInput
-                  label="Appeal Deadline" name="appealDeadline" type="datetime-local"
-                  value={data.appealDeadline} onChange={(v) => update('appealDeadline', v)}
-                  required error={errors.appealDeadline}
-                />
-
-                <div style={{ position: 'relative' }}>
-                  <textarea
-                    value={data.violationDescription}
-                    onChange={(e) => update('violationDescription', e.target.value)}
-                    placeholder="Describe what happened, when you got the notice, and any details TikTok provided..."
-                    maxLength={1000}
-                    className={`field ${errors.violationDescription ? 'shake' : ''}`}
-                    style={{ minHeight: 120, resize: 'vertical', paddingRight: 70 }}
-                  />
-                  <div style={{ position: 'absolute', right: 12, bottom: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-                    {data.violationDescription.length}/1000
+                </Field>
+                <Field label="Appeal Deadline *" error={errors.appealDeadline}>
+                  <input className="field" type="datetime-local" value={data.appealDeadline}
+                    onChange={(e) => update('appealDeadline', e.target.value)} />
+                </Field>
+                <Field label="Number of Violations">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button type="button" onClick={() => setViolationCount(data.violationCount - 1)} className="btn-ghost" style={{ width: 38, height: 38 }}>−</button>
+                    <div style={{ minWidth: 50, textAlign: 'center', fontSize: 18, fontWeight: 700 }}>{data.violationCount}</div>
+                    <button type="button" onClick={() => setViolationCount(data.violationCount + 1)} className="btn-ghost" style={{ width: 38, height: 38 }}>+</button>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>(1–10)</span>
                   </div>
-                </div>
-
-                <FloatingInput
-                  label="Total GMV (Monthly USD, optional)" name="totalGMV" type="number"
-                  value={data.totalGMV} onChange={(v) => update('totalGMV', v)}
-                />
-              </div>
-            </motion.div>
-          )}
-
-          {step === 1 && (
-            <motion.div key="step2"
-              initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
-              transition={{ duration: 0.25 }}
-            >
-              <h3 style={{ margin: '0 0 6px', fontSize: 18, fontWeight: 700 }}>Evidence</h3>
-              <p style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--text-secondary)' }}>
-                Pick screenshots of the violation notice, ban screen, or any related documents (up to 10).
-                Once your case is created, our team will reach out in your Discord channel where you can attach these files securely.
-              </p>
-
-              <button
-                type="button"
-                onDrop={onDrop}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onClick={() => document.getElementById('hidden-file')?.click()}
-                aria-label="Browse files to attach as evidence"
-                style={{
-                  width: '100%',
-                  cursor: 'pointer',
-                  padding: '40px 20px', borderRadius: 'var(--radius-lg)',
-                  border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border)'}`,
-                  background: dragOver ? 'rgba(88,101,242,0.06)' : 'var(--bg-glass)',
-                  textAlign: 'center', transition: 'var(--transition)',
-                  color: 'var(--text-primary)',
-                }}
-              >
-                <div style={{ fontSize: 36, marginBottom: 8 }}>📁</div>
-                <div style={{ fontWeight: 600, fontSize: 15 }}>Drag files here or click to browse</div>
-                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-                  Images, PDFs, documents · {files.length}/10 uploaded
-                </div>
-                <input id="hidden-file" type="file" multiple style={{ display: 'none' }}
-                  accept="image/*,application/pdf,.doc,.docx"
-                  onChange={(e) => addFiles(Array.from(e.target.files || []))}
-                />
-              </button>
-
-              {files.length > 0 && (
-                <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {files.map((f) => (
-                    <motion.div key={f.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 12, padding: 12,
-                        background: 'var(--bg-glass)', border: '1px solid var(--border)', borderRadius: 12,
-                      }}>
-                      <div style={{
-                        width: 40, height: 40, borderRadius: 8,
-                        background: 'var(--bg-card)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: 18, flexShrink: 0,
-                      }}>
-                        {f.file.type.startsWith('image/') ? '🖼️' : f.file.type.includes('pdf') ? '📄' : '📎'}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.file.name}</div>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                          {(f.file.size / 1024).toFixed(0)} KB · Selected
-                        </div>
-                      </div>
-                      <button onClick={(e) => { e.stopPropagation(); setFiles((p) => p.filter((x) => x.id !== f.id)); }} style={{
-                        width: 28, height: 28, borderRadius: 8,
-                        background: 'var(--bg-card)', color: 'var(--text-muted)',
-                        fontSize: 14,
-                      }}>×</button>
-                    </motion.div>
+                </Field>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 6 }}>
+                  {data.violations.map((v, i) => (
+                    <ViolationBlock key={i} index={i} value={v}
+                      error={errors[`v${i}_desc`]}
+                      onChange={(p) => updateViolation(i, p)}
+                      onAddFiles={(files) => addFiles(i, files)}
+                      onRemoveFile={(fid) => updateViolation(i, { files: v.files.filter((f) => f.id !== fid) })}
+                    />
                   ))}
                 </div>
-              )}
-            </motion.div>
-          )}
+              </Section>
+            )}
 
-          {step === 2 && (
-            <motion.div key="step3"
-              initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
-              transition={{ duration: 0.25 }}
-            >
-              <h3 style={{ margin: '0 0 18px', fontSize: 18, fontWeight: 700 }}>Review & Submit</h3>
+            {step === 1 && (
+              <Section title="Purchase Information" subtitle="Was this account purchased, or did you build it yourself?">
+                <YesNo label="Was this account purchased?" value={data.purchase.wasPurchased} error={errors.wasPurchased}
+                  onChange={(b) => updateNested('purchase', { wasPurchased: b })} />
+                {data.purchase.wasPurchased && (
+                  <>
+                    <Field label="Date of Purchase">
+                      <input className="field" type="date" value={data.purchase.accountPurchaseDate}
+                        onChange={(e) => updateNested('purchase', { accountPurchaseDate: e.target.value })} />
+                    </Field>
+                    <Field label="Time on Account After Purchase">
+                      <input className="field" placeholder="e.g. 6 months" value={data.purchase.timeAfterPurchase}
+                        onChange={(e) => updateNested('purchase', { timeAfterPurchase: e.target.value })} />
+                    </Field>
+                    <Field label="Changes Made to the Account">
+                      <textarea className="field" rows={4} placeholder="Describe niche changes, content style changes, etc."
+                        value={data.purchase.changesMade}
+                        onChange={(e) => updateNested('purchase', { changesMade: e.target.value })} />
+                    </Field>
+                  </>
+                )}
+              </Section>
+            )}
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <ReviewRow label="Account" value={`@${data.accountUsername}`} onEdit={() => setStep(0)} />
-                <ReviewRow label="Platform" value={data.platform === 'tiktok_shop' ? 'TikTok Shop' : 'TikTok'} onEdit={() => setStep(0)} />
-                <ReviewRow label="Violation" value={VIOLATION_TYPES.find((v) => v.value === data.violationType)?.label || '—'} onEdit={() => setStep(0)} />
-                <ReviewRow label="Appeal Deadline" value={data.appealDeadline ? new Date(data.appealDeadline).toLocaleString() : '—'} onEdit={() => setStep(0)} />
-                <ReviewRow label="Description" value={data.violationDescription || '—'} onEdit={() => setStep(0)} multiline />
-                <ReviewRow label="Evidence Files" value={files.length === 0 ? 'None attached' : `${files.length} file(s) attached`} onEdit={() => setStep(1)} />
-              </div>
+            {step === 2 && (
+              <Section title="Previous Appeals" subtitle="Have you already tried to appeal this violation?">
+                <YesNo label="Have you appealed this before?" value={data.previousAppeals.appealedBefore} error={errors.appealedBefore}
+                  onChange={(b) => updateNested('previousAppeals', { appealedBefore: b })} />
+                {data.previousAppeals.appealedBefore && (
+                  <Field label="Previous Appeal — what did you say?">
+                    <textarea className="field" rows={6} placeholder="Paste the appeal you submitted, or summarize it..."
+                      value={data.previousAppeals.previousScript}
+                      onChange={(e) => updateNested('previousAppeals', { previousScript: e.target.value })} />
+                  </Field>
+                )}
+              </Section>
+            )}
 
-              {success && (
-                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-                  style={{
-                    marginTop: 24, padding: 24, borderRadius: 'var(--radius-lg)',
-                    background: 'rgba(87,242,135,0.10)', border: '1px solid rgba(87,242,135,0.30)',
-                    textAlign: 'center', color: 'var(--success)',
+            {step === 3 && (
+              <Section title="Account Verification" subtitle="Has TikTok verified your identity on this account?">
+                <YesNo label="Have you verified the account with TikTok yourself?"
+                  value={data.verification.verifiedBySelf} error={errors.verifiedBySelf}
+                  onChange={(b) => updateNested('verification', { verifiedBySelf: b })} />
+                <Field label="Notes (optional)">
+                  <textarea className="field" rows={3} placeholder="Any context about ID verification, document state, etc."
+                    value={data.verification.notes}
+                    onChange={(e) => updateNested('verification', { notes: e.target.value })} />
+                </Field>
+              </Section>
+            )}
+
+            {step === 4 && (
+              <Section title="Account Metrics" subtitle="Help us prioritize and craft the strongest appeal.">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+                  <Field label="Number of Face Videos Posted">
+                    <input className="field" type="number" min={0} value={data.metrics.faceVideos}
+                      onChange={(e) => updateNested('metrics', { faceVideos: parseInt(e.target.value) || 0 })} />
+                  </Field>
+                  <Field label="Total GMV (USD, monthly)">
+                    <input className="field" type="number" min={0} value={data.metrics.totalGMV}
+                      onChange={(e) => updateNested('metrics', { totalGMV: parseFloat(e.target.value) || 0 })} />
+                  </Field>
+                  <Field label="Accounts Currently Under Documents">
+                    <input className="field" type="number" min={0} value={data.metrics.accountsUnderDocs}
+                      onChange={(e) => updateNested('metrics', { accountsUnderDocs: parseInt(e.target.value) || 0 })} />
+                  </Field>
+                  <Field label="Commission Frozen (USD amount)">
+                    <input className="field" type="number" min={0} step="0.01"
+                      placeholder="0 if commission is not frozen"
+                      value={data.metrics.commissionFrozenAmount}
+                      onChange={(e) => updateNested('metrics', { commissionFrozenAmount: parseFloat(e.target.value) || 0 })} />
+                  </Field>
+                </div>
+              </Section>
+            )}
+
+            {step === 5 && (
+              <Section title="Choose Your Plan" subtitle="Pick the package that matches your needs. You can change later from settings.">
+                {currentPlan && (
+                  <div style={{
+                    marginBottom: 14, padding: '10px 14px', borderRadius: 10,
+                    background: 'rgba(87,242,135,0.08)', border: '1px solid rgba(87,242,135,0.3)',
+                    color: 'var(--text-primary)', fontSize: 13, display: 'flex',
+                    alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap',
                   }}>
-                  <svg width="64" height="64" viewBox="0 0 64 64" style={{ margin: '0 auto', display: 'block' }}>
-                    <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="3" fill="none" />
-                    <motion.path d="M20 32 L29 41 L44 24"
-                      stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" fill="none"
-                      initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.5, ease: 'easeOut' }}
-                    />
-                  </svg>
-                  <div style={{ marginTop: 12, fontWeight: 700, fontSize: 16 }}>Case submitted</div>
-                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>Redirecting...</div>
-                </motion.div>
-              )}
-            </motion.div>
-          )}
+                    <span>
+                      <strong style={{ color: '#57F287' }}>Current plan:</strong>{' '}
+                      {PLANS.find((p) => p.value === currentPlan)?.name || currentPlan}
+                    </span>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                      Your selection here only flags this case — it won't change your active plan.
+                    </span>
+                  </div>
+                )}
+                {errors.selectedPlan && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 8 }}>{errors.selectedPlan}</div>}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+                  {PLANS.map((p) => {
+                    const active = data.selectedPlan === p.value;
+                    const isCurrent = currentPlan === p.value;
+                    return (
+                      <button key={p.value} type="button" onClick={() => update('selectedPlan', p.value)}
+                        style={{
+                          textAlign: 'left', padding: 18, borderRadius: 14,
+                          background: active ? `${p.color}14` : 'var(--bg-glass)',
+                          border: `2px solid ${active ? p.color : 'var(--border)'}`,
+                          position: 'relative', cursor: 'pointer',
+                          transition: 'var(--transition)',
+                        }}>
+                        {p.recommended && !isCurrent && (
+                          <div style={{
+                            position: 'absolute', top: -10, right: 14,
+                            background: p.color, color: '#000', fontSize: 10, fontWeight: 800,
+                            padding: '3px 10px', borderRadius: 999, letterSpacing: 0.4,
+                          }}>RECOMMENDED</div>
+                        )}
+                        {isCurrent && (
+                          <div style={{
+                            position: 'absolute', top: -10, right: 14,
+                            background: '#57F287', color: '#000', fontSize: 10, fontWeight: 800,
+                            padding: '3px 10px', borderRadius: 999, letterSpacing: 0.4,
+                          }}>YOUR PLAN</div>
+                        )}
+                        <div style={{ fontSize: 13, fontWeight: 700, color: p.color, textTransform: 'uppercase', letterSpacing: 0.6 }}>{p.name}</div>
+                        <div style={{ marginTop: 6, fontSize: 28, fontWeight: 800 }}>${p.price}<span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500, marginLeft: 4 }}>{p.cadence}</span></div>
+                        <ul style={{ marginTop: 12, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {p.features.map((f) => (
+                            <li key={f} style={{ display: 'flex', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+                              <span style={{ color: p.color }}>✓</span>{f}
+                            </li>
+                          ))}
+                        </ul>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    onClick={() => { update('selectedPlan', 'choose_later'); setStep(6); }}
+                    style={{
+                      background: 'transparent', border: 'none', color: 'var(--text-muted)',
+                      fontSize: 12, cursor: 'pointer', textDecoration: 'underline',
+                    }}
+                  >Skip for now — I'll choose later</button>
+                </div>
+              </Section>
+            )}
+
+            {step === 6 && (
+              <Section title="Review & Submit" subtitle="One last check before we kick off your case.">
+                <ReviewRow label="Account" value={`@${data.accountUsername}`} edit={() => setStep(0)} />
+                <ReviewRow label="Violation" value={VIOLATION_TYPES.find((v) => v.value === data.violationType)?.label || '—'} edit={() => setStep(0)} />
+                <ReviewRow label="Deadline" value={data.appealDeadline ? new Date(data.appealDeadline).toLocaleString() : '—'} edit={() => setStep(0)} />
+                <ReviewRow label="# of Violations" value={String(data.violationCount)} edit={() => setStep(0)} />
+                <ReviewRow label="Total Screenshots" value={String(data.violations.reduce((a, v) => a + v.files.length, 0))} edit={() => setStep(0)} />
+                <ReviewRow label="Purchased?" value={data.purchase.wasPurchased == null ? '—' : data.purchase.wasPurchased ? 'Yes' : 'No'} edit={() => setStep(1)} />
+                <ReviewRow label="Appealed Before?" value={data.previousAppeals.appealedBefore == null ? '—' : data.previousAppeals.appealedBefore ? 'Yes' : 'No'} edit={() => setStep(2)} />
+                <ReviewRow label="Verified by Self?" value={data.verification.verifiedBySelf == null ? '—' : data.verification.verifiedBySelf ? 'Yes' : 'No'} edit={() => setStep(3)} />
+                <ReviewRow label="Total GMV" value={`$${data.metrics.totalGMV.toLocaleString()}`} edit={() => setStep(4)} />
+                <ReviewRow label="Plan" value={PLANS.find((p) => p.value === data.selectedPlan)?.name || 'Not selected'} edit={() => setStep(5)} />
+
+                {success && (
+                  <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+                    style={{ marginTop: 20, padding: 20, borderRadius: 14, background: 'rgba(87,242,135,0.10)', border: '1px solid rgba(87,242,135,0.3)', textAlign: 'center', color: 'var(--success)' }}>
+                    <div style={{ fontSize: 28 }}>✓</div>
+                    <div style={{ marginTop: 8, fontWeight: 700 }}>Case submitted</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Redirecting to your case…</div>
+                  </motion.div>
+                )}
+              </Section>
+            )}
+          </motion.div>
         </AnimatePresence>
 
         <div style={{ marginTop: 28, display: 'flex', gap: 10 }}>
-          {step > 0 && (
-            <button onClick={prev} className="btn-ghost" disabled={submitting}>← Back</button>
-          )}
+          {step > 0 && <button onClick={prev} className="btn-ghost" disabled={submitting}>← Back</button>}
           <div style={{ flex: 1 }} />
-          {step < 2 && (
-            <button onClick={next} className="btn-primary">Continue →</button>
-          )}
-          {step === 2 && !success && (
+          {step < STEPS.length - 1 && <button onClick={next} className="btn-primary">Continue →</button>}
+          {step === STEPS.length - 1 && !success && (
             <button onClick={submit} disabled={submitting} className="btn-primary" style={{ minWidth: 160 }}>
               {submitting ? <span className="spin-dot" style={{ color: '#fff' }} /> : 'Submit Case'}
             </button>
@@ -409,21 +569,122 @@ export default function NewCase() {
   );
 }
 
-function ReviewRow({ label, value, onEdit, multiline }: { label: string; value: string; onEdit: () => void; multiline?: boolean }) {
+function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h3 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700 }}>{title}</h3>
+      {subtitle && <p style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--text-secondary)' }}>{subtitle}</p>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>{children}</div>
+    </div>
+  );
+}
+
+function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>
+      {children}
+      {error && <div style={{ marginTop: 4, fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+    </div>
+  );
+}
+
+function YesNo({ label, value, onChange, error }: { label: string; value: boolean | null; onChange: (b: boolean) => void; error?: string }) {
+  return (
+    <Field label={label} error={error}>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {[true, false].map((b) => (
+          <button key={String(b)} type="button" onClick={() => onChange(b)} style={pillStyle(value === b)}>
+            {b ? 'Yes' : 'No'}
+          </button>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
+const pillStyle = (active: boolean): React.CSSProperties => ({
+  padding: '10px 18px', borderRadius: 10, fontWeight: 600, fontSize: 13,
+  background: active ? 'var(--accent)' : 'var(--bg-glass)',
+  color: active ? '#fff' : 'var(--text-primary)',
+  border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+  cursor: 'pointer', transition: 'var(--transition)',
+});
+
+function ViolationBlock({
+  index, value, error, onChange, onAddFiles, onRemoveFile,
+}: {
+  index: number;
+  value: ViolationItem;
+  error?: string;
+  onChange: (p: Partial<ViolationItem>) => void;
+  onAddFiles: (files: File[]) => void;
+  onRemoveFile: (id: string) => void;
+}) {
+  const [drag, setDrag] = useState(false);
   return (
     <div style={{
-      padding: 14, borderRadius: 12,
+      padding: 16, borderRadius: 12,
       background: 'var(--bg-glass)', border: '1px solid var(--border)',
-      display: 'flex', alignItems: multiline ? 'flex-start' : 'center', justifyContent: 'space-between', gap: 12,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+        Violation {index + 1}
+      </div>
+      <textarea
+        className="field" rows={3}
+        placeholder="What did TikTok flag? Paste the message they sent if you have it."
+        value={value.description}
+        onChange={(e) => onChange({ description: e.target.value })}
+      />
+      {error && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{error}</div>}
+
+      <div
+        onDrop={(e) => { e.preventDefault(); setDrag(false); onAddFiles(Array.from(e.dataTransfer.files)); }}
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onClick={() => document.getElementById(`file-${index}`)?.click()}
+        style={{
+          marginTop: 10, padding: '20px 14px', borderRadius: 10,
+          border: `2px dashed ${drag ? 'var(--accent)' : 'var(--border)'}`,
+          background: drag ? 'rgba(88,101,242,0.06)' : 'transparent',
+          textAlign: 'center', cursor: 'pointer',
+          color: 'var(--text-secondary)', fontSize: 13,
+        }}>
+        📎 Drop screenshots or click to browse · {value.files.length}/8
+        <input id={`file-${index}`} type="file" multiple accept="image/*" style={{ display: 'none' }}
+          onChange={(e) => onAddFiles(Array.from(e.target.files || []))} />
+      </div>
+      {value.files.length > 0 && (
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 8 }}>
+          {value.files.map((f) => (
+            <div key={f.id} style={{ position: 'relative', aspectRatio: '1 / 1', borderRadius: 8, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <img src={f.dataUrl} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <button onClick={(e) => { e.stopPropagation(); onRemoveFile(f.id); }} style={{
+                position: 'absolute', top: 4, right: 4,
+                width: 22, height: 22, borderRadius: '50%',
+                background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: 12,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: 'none',
+              }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewRow({ label, value, edit }: { label: string; value: string; edit: () => void }) {
+  return (
+    <div style={{
+      padding: 12, borderRadius: 10,
+      background: 'var(--bg-glass)', border: '1px solid var(--border)',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
     }}>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.4 }}>{label}</div>
-        <div style={{
-          marginTop: 4, fontSize: 14, color: 'var(--text-primary)',
-          whiteSpace: multiline ? 'pre-wrap' : 'nowrap', overflow: multiline ? 'visible' : 'hidden', textOverflow: 'ellipsis',
-        }}>{value}</div>
+        <div style={{ marginTop: 2, fontSize: 14, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
       </div>
-      <button onClick={onEdit} style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>Edit</button>
+      <button onClick={edit} style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>Edit</button>
     </div>
   );
 }

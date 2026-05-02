@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuth } from '../../hooks/useAuth';
+import NotificationBell from './NotificationBell';
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard' },
@@ -102,6 +103,7 @@ export default function CustomerNav() {
           </nav>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <NotificationBell />
             <div ref={menuRef} className="nav-desktop" style={{ position: 'relative' }}>
               <button onClick={() => setMenuOpen((v) => !v)} style={{
                 display: 'flex', alignItems: 'center', gap: 10,
