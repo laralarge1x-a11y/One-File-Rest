@@ -111,9 +111,21 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
 
         // Role-based redirect
         const role = (req.user as any)?.role || 'client';
-        const redirectTo = ['admin', 'owner', 'case_manager', 'support'].includes(role)
-          ? '/admin'
-          : '/dashboard';
+        const discordId = (req.user as any)?.discord_id;
+        const isStaff = ['admin', 'owner', 'case_manager', 'support'].includes(role);
+        const redirectTo = isStaff ? '/admin' : '/dashboard';
+
+        // Audit log
+        import('../services/webhook.js')
+          .then(({ logAudit }) =>
+            logAudit({
+              actorDiscordId: discordId,
+              action: isStaff ? 'admin_login' : 'client_login',
+              targetType: 'user',
+              details: { role, username: (req.user as any)?.discord_username },
+            })
+          )
+          .catch(console.error);
 
         console.log('[Auth] Login successful — role:', role, '— redirecting to', redirectTo);
         return res.redirect(redirectTo);

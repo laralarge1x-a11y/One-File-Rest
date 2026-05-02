@@ -50,7 +50,13 @@ router.post('/users/sync', async (req: Request, res: Response) => {
       ).catch(console.error);
     }
 
-    logAudit({ action: 'bot_user_sync', targetType: 'user', targetId: user.id, details: { discord_id, plan } }).catch(console.error);
+    logAudit({
+      actorDiscordId: 'bot',
+      action: plan ? 'plan_granted' : 'user_synced',
+      targetType: 'user',
+      targetId: user.id,
+      details: { discord_id, plan, plan_expiry },
+    }).catch(console.error);
 
     res.json({ success: true, user });
   } catch (err) {
@@ -86,10 +92,32 @@ router.post('/users/:discordId/revoke', async (req: Request, res: Response) => {
        WHERE discord_id = $1`,
       [discordId]
     );
-    logAudit({ action: 'bot_access_revoked', details: { discord_id: discordId } }).catch(console.error);
+    logAudit({
+      actorDiscordId: 'bot',
+      action: 'plan_revoked',
+      targetType: 'user',
+      details: { discord_id: discordId },
+    }).catch(console.error);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to revoke access' });
+  }
+});
+
+// GET /bot/users/by-channel/:channelId — reverse lookup by Discord channel
+router.get('/users/by-channel/:channelId', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT u.*, COALESCE(s.role, u.role, 'client') as resolved_role
+       FROM users u LEFT JOIN staff s ON u.discord_id = s.discord_id
+       WHERE u.discord_channel_id = $1`,
+      [req.params.channelId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'No user found for that channel' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('[bot/users/by-channel]', err);
+    res.status(500).json({ error: 'Failed to fetch user by channel' });
   }
 });
 

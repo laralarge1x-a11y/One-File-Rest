@@ -10,11 +10,12 @@ const S = {
   result: { background: '#0a0a16', border: '1px solid #2a2a4a', borderRadius: '10px', padding: '16px', marginTop: '16px', position: 'relative' as const },
 };
 
-type Tab = 'appeal-writer' | 'violation-analyzer' | 'bulk-ranker' | 'policy-explainer';
+type Tab = 'appeal-writer' | 'violation-analyzer' | 'image-analyzer' | 'bulk-ranker' | 'policy-explainer';
 
 const TABS: { id: Tab; label: string; icon: string; desc: string }[] = [
   { id: 'appeal-writer', label: 'Appeal Writer', icon: '✍️', desc: 'Generate professional appeal letters' },
   { id: 'violation-analyzer', label: 'Violation Analyzer', icon: '🔍', desc: 'Analyze violations & get strategy' },
+  { id: 'image-analyzer', label: 'Image Analyzer', icon: '🖼️', desc: 'Upload screenshot of violation notice for AI analysis' },
   { id: 'bulk-ranker', label: 'Bulk Case Ranker', icon: '📊', desc: 'AI-rank all pending cases by urgency' },
   { id: 'policy-explainer', label: 'Policy Explainer', icon: '📖', desc: 'Explain TikTok policies in plain language' },
 ];
@@ -248,6 +249,119 @@ function BulkRanker() {
   );
 }
 
+function ImageAnalyzer() {
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string>('');
+  const [result, setResult] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const onPick = (f: File | null) => {
+    setFile(f); setResult(null); setError('');
+    if (!f) { setPreview(''); return; }
+    const reader = new FileReader();
+    reader.onload = () => setPreview(reader.result as string);
+    reader.readAsDataURL(f);
+  };
+
+  const fileToBase64 = (f: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        resolve(dataUrl.split(',')[1] || '');
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(f);
+    });
+
+  const analyze = async () => {
+    if (!file) return;
+    setLoading(true); setError(''); setResult(null);
+    try {
+      const base64 = await fileToBase64(file);
+      const r = await fetch('/api/ai/analyze-image', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64, mimeType: file.type || 'image/png' }),
+      });
+      const d = await r.json();
+      if (r.ok) setResult(d.analysis || d);
+      else setError(d.error || 'Failed');
+    } catch (e: any) { setError(e?.message || 'Network error'); }
+    setLoading(false);
+  };
+
+  const severityColor: Record<string, string> = {
+    Critical: '#ED4245', High: '#F5A623', Medium: '#FEE75C', Low: '#57F287',
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div>
+          <label style={S.label}>Upload Violation Notice Screenshot</label>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => onPick(e.target.files?.[0] || null)}
+            style={{ ...S.input, padding: '8px', cursor: 'pointer' }}
+          />
+        </div>
+        {preview && (
+          <div style={{ background: '#0a0a0a', border: '1px solid #1e1e1e', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+            <img src={preview} alt="preview" style={{ maxWidth: '100%', maxHeight: '320px', borderRadius: '6px' }} />
+          </div>
+        )}
+        <button onClick={analyze} disabled={loading || !file}
+          style={{ ...S.btn, background: loading ? '#333' : '#5865F2', color: '#fff', opacity: !file ? 0.5 : 1 }}>
+          {loading ? '⏳ Analyzing image...' : '🖼️ Analyze Image'}
+        </button>
+      </div>
+
+      {error && <div style={{ background: '#ED424520', border: '1px solid #ED424540', borderRadius: '8px', padding: '10px', color: '#ED4245', fontSize: '13px', marginTop: '12px' }}>{error}</div>}
+
+      {result && (
+        <div style={S.result}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
+            <div style={{ background: '#111', borderRadius: '8px', padding: '12px' }}>
+              <div style={{ fontSize: '10px', color: '#555', textTransform: 'uppercase', fontWeight: '600', marginBottom: '4px' }}>Severity</div>
+              <div style={{ color: severityColor[result.severity] || '#666', fontWeight: '700', fontSize: '14px' }}>{result.severity || '—'}</div>
+            </div>
+            <div style={{ background: '#111', borderRadius: '8px', padding: '12px' }}>
+              <div style={{ fontSize: '10px', color: '#555', textTransform: 'uppercase', fontWeight: '600', marginBottom: '4px' }}>Appeal Likelihood</div>
+              <div style={{ color: '#57F287', fontWeight: '700', fontSize: '14px' }}>{result.appeal_likelihood || '—'}</div>
+            </div>
+          </div>
+          {result.detected && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#555', fontWeight: '600', textTransform: 'uppercase', marginBottom: '6px' }}>What Was Detected</div>
+              <div style={{ color: '#ccc', fontSize: '13px', lineHeight: 1.6 }}>{result.detected}</div>
+            </div>
+          )}
+          {result.policy_section && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#555', fontWeight: '600', textTransform: 'uppercase', marginBottom: '6px' }}>Policy Section</div>
+              <div style={{ color: '#FEE75C', fontSize: '13px', lineHeight: 1.6 }}>📋 {result.policy_section}</div>
+            </div>
+          )}
+          {result.recommendation && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#555', fontWeight: '600', textTransform: 'uppercase', marginBottom: '6px' }}>Recommended Next Step</div>
+              <div style={{ color: '#57F287', fontSize: '13px', lineHeight: 1.6 }}>💡 {result.recommendation}</div>
+            </div>
+          )}
+          <button onClick={() => navigator.clipboard.writeText(JSON.stringify(result, null, 2))}
+            style={{ position: 'absolute', top: '12px', right: '12px', background: '#1a1a2a', border: '1px solid #5865F230', color: '#5865F2', borderRadius: '6px', padding: '4px 12px', fontSize: '11px', cursor: 'pointer', fontWeight: '600' }}>
+            📋 Copy JSON
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PolicyExplainer() {
   const [form, setForm] = useState({ violation_type: '', policy_text: '' });
   const [result, setResult] = useState('');
@@ -330,6 +444,7 @@ export default function AITools() {
 
         {activeTab === 'appeal-writer' && <AppealWriter />}
         {activeTab === 'violation-analyzer' && <ViolationAnalyzer />}
+        {activeTab === 'image-analyzer' && <ImageAnalyzer />}
         {activeTab === 'bulk-ranker' && <BulkRanker />}
         {activeTab === 'policy-explainer' && <PolicyExplainer />}
       </div>

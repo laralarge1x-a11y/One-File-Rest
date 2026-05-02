@@ -32,19 +32,44 @@ import botBridgeRoutes from './routes/botbridge.js';
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
 
 // ─── Environment validation ────────────────────────────────────────────────
-const REQUIRED_ENV = ['SESSION_SECRET', 'DATABASE_URL'];
-const OPTIONAL_WARN = ['DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET', 'DISCORD_REDIRECT_URI', 'GROQ_API_KEY', 'DISCORD_BOT_TOKEN', 'ADMIN_DISCORD_IDS', 'BOT_BRIDGE_TOKEN'];
+const REQUIRED_ENV: Array<{ key: string; reason: string }> = [
+  { key: 'DATABASE_URL', reason: 'PostgreSQL connection' },
+  { key: 'SESSION_SECRET', reason: 'session encryption' },
+  { key: 'DISCORD_CLIENT_ID', reason: 'OAuth login' },
+  { key: 'DISCORD_CLIENT_SECRET', reason: 'OAuth login' },
+  { key: 'DISCORD_REDIRECT_URI', reason: 'OAuth callback' },
+];
+const OPTIONAL_ENV: Array<{ key: string; reason: string }> = [
+  { key: 'GROQ_API_KEY', reason: 'AI features' },
+  { key: 'ADMIN_DISCORD_IDS', reason: 'admin auto-detection will not work' },
+  { key: 'BOT_BRIDGE_TOKEN', reason: 'bot bridge will reject all bot requests' },
+  { key: 'DISCORD_BOT_TOKEN', reason: 'Discord bot cannot start' },
+  { key: 'DISCORD_GUILD_ID', reason: 'slash commands cannot register' },
+];
 
-for (const key of REQUIRED_ENV) {
-  if (!process.env[key]) {
-    console.error(`❌ MISSING REQUIRED ENV VAR: ${key} — server cannot start`);
-    process.exit(1);
+console.log('\n┌─────────────────────────────────────────────────────────────┐');
+console.log('│ Elite Tok Club — Startup Environment Checklist              │');
+console.log('└─────────────────────────────────────────────────────────────┘');
+for (const { key, reason } of REQUIRED_ENV) {
+  if (process.env[key]) {
+    console.log(`✅ ${key.padEnd(24)} — set`);
+  } else {
+    console.error(`❌ ${key.padEnd(24)} — REQUIRED for ${reason}, server cannot start`);
   }
 }
-for (const key of OPTIONAL_WARN) {
-  if (!process.env[key]) {
-    console.warn(`⚠️  Missing env var: ${key}`);
+for (const { key, reason } of OPTIONAL_ENV) {
+  if (process.env[key]) {
+    console.log(`✅ ${key.padEnd(24)} — set`);
+  } else {
+    console.warn(`⚠️  ${key.padEnd(24)} — NOT SET (${reason})`);
   }
+}
+console.log('');
+
+const missingRequired = REQUIRED_ENV.filter(({ key }) => !process.env[key]);
+if (missingRequired.length > 0) {
+  console.error(`❌ Cannot start — missing required env vars: ${missingRequired.map((v) => v.key).join(', ')}`);
+  process.exit(1);
 }
 
 // ─── App setup ────────────────────────────────────────────────────────────
@@ -122,19 +147,26 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─── Routes ───────────────────────────────────────────────────────────────
-app.use('/auth', authRoutes);
-app.use('/bot', botBridgeRoutes);
-app.use('/api/cases', requireAuth, casesRoutes);
-app.use('/api/messages', requireAuth, messagesRoutes);
-app.use('/api/evidence', requireAuth, evidenceRoutes);
-app.use('/api/templates', requireStaff, templatesRoutes);
-app.use('/api/policies', policiesRoutes);
-app.use('/api/broadcast', requireStaff, broadcastRoutes);
-app.use('/api/ai', requireAuth, aiRoutes);
-app.use('/api/analytics', requireStaff, analyticsRoutes);
-app.use('/api/subscriptions', requireAuth, subscriptionsRoutes);
-app.use('/api/compliance', requireAuth, complianceRoutes);
-app.use('/api/admin', requireStaff, adminRoutes);
+const ROUTE_MOUNTS: Array<{ prefix: string; router: any }> = [];
+const mount = (prefix: string, ...handlers: any[]) => {
+  const router = handlers[handlers.length - 1];
+  ROUTE_MOUNTS.push({ prefix, router });
+  app.use(prefix, ...handlers);
+};
+
+mount('/auth', authRoutes);
+mount('/bot', botBridgeRoutes);
+mount('/api/cases', requireAuth, casesRoutes);
+mount('/api/messages', requireAuth, messagesRoutes);
+mount('/api/evidence', requireAuth, evidenceRoutes);
+mount('/api/templates', requireStaff, templatesRoutes);
+mount('/api/policies', policiesRoutes);
+mount('/api/broadcast', requireStaff, broadcastRoutes);
+mount('/api/ai', requireAuth, aiRoutes);
+mount('/api/analytics', requireStaff, analyticsRoutes);
+mount('/api/subscriptions', requireAuth, subscriptionsRoutes);
+mount('/api/compliance', requireAuth, complianceRoutes);
+mount('/api/admin', requireStaff, adminRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -234,6 +266,36 @@ async function start() {
     const PORT = process.env.NODE_ENV === 'production' ? 5000 : (Number(process.env.PORT) || 3000);
     httpServer.listen(PORT, () => {
       console.log(`✓ Elite Tok Club Portal running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+
+      // ─── Print all registered routes ────────────────────────────────────
+      try {
+        console.log('\n┌─────────────────────────────────────────────────────────────┐');
+        console.log('│ Registered Routes                                           │');
+        console.log('└─────────────────────────────────────────────────────────────┘');
+        const collected: string[] = [];
+        // Top-level direct routes (e.g. /health)
+        const appRouter = (app as any).router || (app as any)._router;
+        for (const layer of appRouter?.stack || []) {
+          if (layer.route?.path) {
+            const methods = Object.keys(layer.route.methods || {}).map((m) => m.toUpperCase()).join(',');
+            collected.push(`${methods.padEnd(10)} ${layer.route.path}`);
+          }
+        }
+        // Mounted sub-routers with explicit prefixes
+        for (const { prefix, router } of ROUTE_MOUNTS) {
+          for (const layer of router?.stack || []) {
+            if (layer.route?.path) {
+              const methods = Object.keys(layer.route.methods || {}).map((m) => m.toUpperCase()).join(',');
+              const fullPath = `${prefix}${layer.route.path === '/' ? '' : layer.route.path}`;
+              collected.push(`${methods.padEnd(10)} ${fullPath}`);
+            }
+          }
+        }
+        collected.sort().forEach((r) => console.log(`  ${r}`));
+        console.log(`  Total: ${collected.length} routes\n`);
+      } catch (e) {
+        console.warn('[startup] Route enumeration failed:', e);
+      }
     });
   } catch (err) {
     console.error('❌ Failed to start server:', err);
