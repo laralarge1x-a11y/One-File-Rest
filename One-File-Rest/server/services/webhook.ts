@@ -1,12 +1,28 @@
 import pool from '../db/client.js';
 
+const PORTAL_URL = process.env.PORTAL_URL || 'https://one-file-rest.replit.app';
+
+// Discord component types & button styles
+const COMPONENT_TYPE_ACTION_ROW = 1;
+const COMPONENT_TYPE_BUTTON = 2;
+const BUTTON_STYLE_LINK = 5;
+
+export interface WebhookButton {
+  label: string;
+  url: string;
+  emoji?: string;
+}
+
 export interface WebhookEmbed {
-  title: string;
+  title?: string;
   description?: string;
   color: number;
+  author?: { name: string; icon_url?: string };
   fields?: Array<{ name: string; value: string; inline?: boolean }>;
   footer?: { text: string };
   timestamp?: string;
+  thumbnail?: { url: string };
+  buttons?: WebhookButton[];
 }
 
 // Plan metadata
@@ -34,19 +50,41 @@ export const PLAN_META: Record<string, { name: string; price: number; color: num
   },
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────
+function buildButtonRow(buttons?: WebhookButton[]): any[] {
+  if (!buttons || buttons.length === 0) return [];
+  // Discord limits 5 buttons per row
+  const items = buttons.slice(0, 5).map((b) => {
+    const btn: any = {
+      type: COMPONENT_TYPE_BUTTON,
+      style: BUTTON_STYLE_LINK,
+      label: b.label,
+      url: b.url,
+    };
+    if (b.emoji) btn.emoji = { name: b.emoji };
+    return btn;
+  });
+  return [{ type: COMPONENT_TYPE_ACTION_ROW, components: items }];
+}
+
+function truncate(s: string | undefined | null, max: number): string {
+  if (!s) return '';
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
 // ─── Core fire function ────────────────────────────────────────────────────
 async function _fireWebhook(discordId: string, eventType: string, embed: WebhookEmbed): Promise<void> {
-  // Look up user's webhook URL and id
   const userResult = await pool.query(
     'SELECT id, discord_webhook_url FROM users WHERE discord_id = $1',
     [discordId]
   );
 
   if (userResult.rows.length === 0 || !userResult.rows[0].discord_webhook_url) {
-    return; // No webhook configured — silently skip
+    return;
   }
 
   const { id: userId, discord_webhook_url: webhookUrl } = userResult.rows[0];
+  const { buttons, ...embedFields } = embed;
 
   let success = false;
   let errorMessage: string | null = null;
@@ -57,9 +95,10 @@ async function _fireWebhook(discordId: string, eventType: string, embed: Webhook
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         embeds: [{
-          ...embed,
+          ...embedFields,
           timestamp: embed.timestamp || new Date().toISOString(),
         }],
+        components: buildButtonRow(buttons),
       }),
     });
 
@@ -73,7 +112,6 @@ async function _fireWebhook(discordId: string, eventType: string, embed: Webhook
     errorMessage = fetchErr?.message || 'Network error';
   }
 
-  // Log to webhook_logs (non-fatal)
   try {
     await pool.query(
       `INSERT INTO webhook_logs (user_id, event_type, payload, success, error_message, created_at)
@@ -91,7 +129,6 @@ async function _fireWebhook(discordId: string, eventType: string, embed: Webhook
 
 /**
  * Fire a webhook non-blocking. NEVER awaited in main request flow.
- * Usage: fireWebhook(discordId, 'case_created', embed).catch(console.error);
  */
 export function fireWebhook(discordId: string, eventType: string, embed: WebhookEmbed): void {
   _fireWebhook(discordId, eventType, embed).catch((err) => {
@@ -108,19 +145,39 @@ export function buildNewCaseEmbed(caseData: {
   plan?: string;
   account_username?: string;
 }): WebhookEmbed {
-  const planName = caseData.plan ? (PLAN_META[caseData.plan]?.name || caseData.plan) : 'Unknown';
+  const planName = caseData.plan ? (PLAN_META[caseData.plan]?.name || caseData.plan) : '—';
+  const planColor = caseData.plan ? (PLAN_META[caseData.plan]?.color || 0x5865F2) : 0x5865F2;
+  const acct = caseData.account_username ? `@${caseData.account_username}` : 'Account pending';
+
   return {
-    color: 0x5865F2,
-    title: '📋 New Case Submitted',
+    color: planColor,
+    author: { name: 'Elite Tok Club  •  Case Submitted' },
+    title: `📋  Case #${caseData.id}  •  ${caseData.violation_type || 'Violation'}`,
+    description: `**${acct}**  ·  ${planName}\n\u200b`,
     fields: [
-      { name: 'Case ID', value: `#${caseData.id}`, inline: true },
-      { name: 'Plan', value: planName, inline: true },
-      { name: 'Violation Type', value: caseData.violation_type || 'Unknown', inline: true },
-      { name: 'Account', value: caseData.account_username || 'N/A', inline: true },
-      { name: 'Description', value: (caseData.violation_description || 'No description').substring(0, 200), inline: false },
-      { name: 'Status', value: '⏳ Pending Review', inline: true },
+      {
+        name: '📝  What you told us',
+        value: truncate(caseData.violation_description || '_No description provided_', 500),
+        inline: false,
+      },
+      {
+        name: '\u200b',
+        value:
+          '**Where your case stands**\n' +
+          '🟢  **Submitted**  ·  just now\n' +
+          '⚪  In Review\n' +
+          '⚪  Appeal Drafted\n' +
+          '⚪  Appeal Sent\n' +
+          '⚪  Awaiting TikTok\n' +
+          '⚪  Resolved',
+        inline: false,
+      },
     ],
-    footer: { text: 'TikTok Recovery Portal • Our team will review your case shortly' },
+    footer: { text: 'A specialist will review your case shortly  •  Elite Tok Club Portal' },
+    buttons: [
+      { label: 'Open Case', emoji: '🔍', url: `${PORTAL_URL}/cases/${caseData.id}` },
+      { label: 'All My Cases', emoji: '📋', url: `${PORTAL_URL}/cases` },
+    ],
   };
 }
 
@@ -131,13 +188,13 @@ export function buildClientMessageEmbed(data: {
 }): WebhookEmbed {
   return {
     color: 0x57F287,
-    title: '💬 New Message from Client',
-    fields: [
-      { name: 'Case', value: `#${data.caseId}`, inline: true },
-      { name: 'From', value: data.senderName || 'Client', inline: true },
-      { name: 'Message', value: data.content.substring(0, 200), inline: false },
+    author: { name: `Elite Tok Club  •  New message from ${data.senderName || 'client'}` },
+    title: `💬  Case #${data.caseId}`,
+    description: `> ${truncate(data.content, 500).replace(/\n/g, '\n> ')}`,
+    footer: { text: 'Open the portal to reply  •  Elite Tok Club Admin' },
+    buttons: [
+      { label: 'Open & Reply', emoji: '↩️', url: `${PORTAL_URL}/cases/${data.caseId}` },
     ],
-    footer: { text: 'Reply on the portal to respond' },
   };
 }
 
@@ -148,13 +205,14 @@ export function buildStaffReplyEmbed(data: {
 }): WebhookEmbed {
   return {
     color: 0xFEE75C,
-    title: '👨‍💼 Staff Reply',
-    fields: [
-      { name: 'Case', value: `#${data.caseId}`, inline: true },
-      { name: 'Staff', value: data.staffName, inline: true },
-      { name: 'Message', value: data.content.substring(0, 200), inline: false },
+    author: { name: `Elite Tok Club  •  ${data.staffName} replied` },
+    title: `💬  Case #${data.caseId}`,
+    description: `> ${truncate(data.content, 500).replace(/\n/g, '\n> ')}`,
+    footer: { text: 'Reply in this channel or open the portal  •  Elite Tok Club Portal' },
+    buttons: [
+      { label: 'Open Case', emoji: '🔍', url: `${PORTAL_URL}/cases/${data.caseId}` },
+      { label: 'View Conversation', emoji: '💬', url: `${PORTAL_URL}/messages` },
     ],
-    footer: { text: 'Login to portal to view full conversation' },
   };
 }
 
@@ -164,16 +222,26 @@ export function buildStatusChangedEmbed(data: {
   newStatus: string;
   updatedBy?: string;
 }): WebhookEmbed {
+  const statusEmoji: Record<string, string> = {
+    pending: '⏳', intake: '📥', profile_built: '🏗️', appeal_drafted: '✍️',
+    appeal_submitted: '📤', awaiting_tiktok: '⌛', response_received: '📩',
+    won: '✅', denied: '❌', escalated: '🚨', closed: '🔒',
+  };
+  const fmt = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
   return {
     color: 0xEB459E,
-    title: '🔄 Case Status Updated',
+    author: { name: 'Elite Tok Club  •  Case Updated' },
+    title: `🔄  Case #${data.caseId}`,
+    description:
+      `${statusEmoji[data.oldStatus] || '•'}  ${fmt(data.oldStatus)}  →  ${statusEmoji[data.newStatus] || '•'}  **${fmt(data.newStatus)}**\n\u200b`,
     fields: [
-      { name: 'Case ID', value: `#${data.caseId}`, inline: true },
-      { name: 'Old Status', value: data.oldStatus, inline: true },
-      { name: 'New Status', value: data.newStatus, inline: true },
-      { name: 'Updated By', value: data.updatedBy || 'Staff', inline: true },
+      { name: 'Updated by', value: data.updatedBy || 'Staff', inline: true },
     ],
-    footer: { text: 'TikTok Recovery Portal' },
+    footer: { text: 'Elite Tok Club Portal' },
+    buttons: [
+      { label: 'Open Case', emoji: '🔍', url: `${PORTAL_URL}/cases/${data.caseId}` },
+    ],
   };
 }
 
@@ -184,13 +252,13 @@ export function buildEvidenceUploadedEmbed(data: {
 }): WebhookEmbed {
   return {
     color: 0x9B59B6,
-    title: '📎 Evidence Uploaded',
-    fields: [
-      { name: 'Case ID', value: `#${data.caseId}`, inline: true },
-      { name: 'File', value: data.fileName, inline: true },
-      { name: 'Uploaded By', value: data.uploadedBy, inline: true },
+    author: { name: 'Elite Tok Club  •  Evidence Added' },
+    title: `📎  Case #${data.caseId}`,
+    description: `**${data.fileName}**\nUploaded by ${data.uploadedBy}`,
+    footer: { text: 'Elite Tok Club Portal' },
+    buttons: [
+      { label: 'View Case', emoji: '🔍', url: `${PORTAL_URL}/cases/${data.caseId}` },
     ],
-    footer: { text: 'TikTok Recovery Portal' },
   };
 }
 
@@ -200,16 +268,27 @@ export function buildCaseResolvedEmbed(data: {
   notes?: string;
   timeTaken?: string;
 }): WebhookEmbed {
+  const outcomeMeta: Record<string, { color: number; emoji: string; label: string }> = {
+    won: { color: 0x57F287, emoji: '🏆', label: 'Won' },
+    denied: { color: 0xED4245, emoji: '❌', label: 'Denied' },
+    partial: { color: 0xFEE75C, emoji: '◐', label: 'Partial' },
+  };
+  const meta = outcomeMeta[data.outcome.toLowerCase()] || { color: 0x57F287, emoji: '✅', label: data.outcome };
+
   return {
-    color: 0x57F287,
-    title: '✅ Case Resolved',
+    color: meta.color,
+    author: { name: 'Elite Tok Club  •  Case Resolved' },
+    title: `${meta.emoji}  Case #${data.caseId}  •  ${meta.label}`,
+    description: truncate(data.notes || 'Your case has been resolved.', 500) + '\n\u200b',
     fields: [
-      { name: 'Case ID', value: `#${data.caseId}`, inline: true },
-      { name: 'Outcome', value: data.outcome, inline: true },
-      { name: 'Time Taken', value: data.timeTaken || 'N/A', inline: true },
-      { name: 'Summary', value: (data.notes || 'Your case has been resolved.').substring(0, 200), inline: false },
+      { name: '⏱️  Time Taken', value: data.timeTaken || '—', inline: true },
+      { name: '📊  Outcome', value: meta.label, inline: true },
     ],
-    footer: { text: 'Thank you for using TikTok Recovery Portal' },
+    footer: { text: 'Thank you for trusting Elite Tok Club' },
+    buttons: [
+      { label: 'View Case Report', emoji: '📄', url: `${PORTAL_URL}/cases/${data.caseId}` },
+      { label: 'Submit New Case', emoji: '📝', url: `${PORTAL_URL}/cases/new` },
+    ],
   };
 }
 
@@ -220,30 +299,31 @@ export function buildBroadcastEmbed(data: {
 }): WebhookEmbed {
   return {
     color: 0x5865F2,
-    title: `📢 ${data.subject}`,
-    description: data.content.substring(0, 2000),
-    footer: { text: `TikTok Recovery Portal${data.senderName ? ' • ' + data.senderName : ''}` },
+    author: { name: `Elite Tok Club  •  Announcement${data.senderName ? ' from ' + data.senderName : ''}` },
+    title: `📢  ${data.subject}`,
+    description: truncate(data.content, 2000),
+    footer: { text: 'Elite Tok Club Portal' },
+    buttons: [
+      { label: 'Open Portal', emoji: '🌐', url: PORTAL_URL },
+    ],
   };
 }
 
 export function buildRevokeEmbed(revokedBy: string): WebhookEmbed {
   return {
     color: 0xED4245,
-    title: '⛔ Access Revoked',
-    description: 'Your TikTok Recovery Portal access has been revoked.',
+    author: { name: 'Elite Tok Club  •  Access Revoked' },
+    title: '⛔  Your portal access has ended',
+    description:
+      'Your Elite Tok Club Portal access is now inactive. New cases can\'t be submitted and the portal is no longer accessible.\n\u200b',
     fields: [
       {
-        name: '📋 What This Means',
-        value: 'Your portal account is now inactive. You can no longer submit new cases or access the portal.',
-        inline: false,
-      },
-      {
-        name: '❓ Questions?',
-        value: 'Please contact support if you believe this is a mistake.',
+        name: '❓  Think this is a mistake?',
+        value: 'Reach out to support and we\'ll get it sorted right away.',
         inline: false,
       },
     ],
-    footer: { text: `TikTok Recovery Portal • Revoked by ${revokedBy}` },
+    footer: { text: `Revoked by ${revokedBy}  •  Elite Tok Club` },
   };
 }
 
