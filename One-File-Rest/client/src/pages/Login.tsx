@@ -164,13 +164,12 @@ export default function Login() {
             <div className="etc-card-glow" aria-hidden="true" />
             <div className="etc-card-shine" aria-hidden="true" />
 
-            {/* Discord avatar circle */}
+            {/* Brand logo orb */}
             <div className="etc-discord-orb">
               <span className="etc-discord-orb-pulse" aria-hidden="true" />
               <span className="etc-discord-orb-ring" aria-hidden="true" />
-              <svg width="34" height="34" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-                <path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.873-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.04.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.974 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
-              </svg>
+              <span className="etc-discord-orb-glow" aria-hidden="true" />
+              <img src={logoUrl} alt="Elite Tok Club" className="etc-discord-orb-logo" />
             </div>
 
             <h2 className="etc-card-title">Continue with Discord</h2>
@@ -518,27 +517,46 @@ const styles = `
 
   .etc-discord-orb {
     position: relative;
-    width: 84px; height: 84px;
+    width: 96px; height: 96px;
     margin: 4px auto 22px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 30% 25%, #8b6fff, #5865F2 60%, #3a44c4);
+    border-radius: 28px;
+    background:
+      linear-gradient(160deg, rgba(155,108,255,0.45), rgba(88,101,242,0.35) 60%, rgba(58,68,196,0.25));
+    padding: 4px;
     display: grid; place-items: center;
     box-shadow:
-      0 0 40px rgba(124,77,255,0.6),
-      0 12px 32px rgba(0,0,0,0.6),
-      0 0 0 1px rgba(255,255,255,0.18) inset;
+      0 0 50px rgba(124,77,255,0.6),
+      0 14px 36px rgba(0,0,0,0.6),
+      0 0 0 1px rgba(155,108,255,0.4) inset;
+  }
+  .etc-discord-orb-logo {
+    position: relative; z-index: 2;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    border-radius: 22px;
+    background: #0a0a14;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .etc-discord-orb-glow {
+    position: absolute; inset: -22px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(155,108,255,0.45), transparent 65%);
+    filter: blur(14px);
+    z-index: 0;
   }
   .etc-discord-orb-pulse {
-    position: absolute; inset: -8px;
-    border-radius: 50%;
+    position: absolute; inset: -10px;
+    border-radius: 32px;
     border: 1.5px solid rgba(155,108,255,0.5);
     animation: etcRingPulse 2.4s ease-out infinite;
+    z-index: 1;
   }
   .etc-discord-orb-ring {
-    position: absolute; inset: -16px;
-    border-radius: 50%;
+    position: absolute; inset: -20px;
+    border-radius: 36px;
     border: 1px solid rgba(155,108,255,0.3);
     animation: etcRingPulse 2.4s ease-out -1.2s infinite;
+    z-index: 1;
   }
   @keyframes etcRingPulse {
     0%   { opacity: 0.8; transform: scale(0.95); }
@@ -703,30 +721,52 @@ const styles = `
   }
 
   /* ============ MOBILE ============ */
-  @media (max-width: 560px) {
-    .etc-root { padding: 18px 18px 56px; }
-    .etc-header { margin-bottom: 28px; }
-    .etc-brand-logo-wrap { width: 38px; height: 38px; border-radius: 10px; }
-    .etc-brand-text { font-size: 11.5px; letter-spacing: 1.1px; }
-    .etc-help { padding: 7px 12px; font-size: 12px; }
-    .etc-help span { display: inline; }
+  @media (max-width: 640px) {
+    .etc-root { padding: 16px 16px 40px; }
+    .etc-header { margin-bottom: 24px; padding: 4px 0 0; }
+    .etc-brand { gap: 10px; }
+    .etc-brand-logo-wrap { width: 36px; height: 36px; border-radius: 10px; }
+    .etc-brand-text { font-size: 11px; letter-spacing: 1px; }
+    .etc-help {
+      padding: 8px 12px;
+      font-size: 12px;
+      border-radius: 100px;
+    }
 
-    .etc-main { gap: 28px; }
-    .etc-headline { font-size: 40px; letter-spacing: -1px; }
-    .etc-subtext { font-size: 14.5px; margin-bottom: 24px; }
-    .etc-feature-list { gap: 14px; }
+    .etc-main { gap: 24px; max-width: 440px; }
+    .etc-left { padding: 0 4px; }
+    .etc-eyebrow { font-size: 11.5px; padding: 5px 11px 5px 9px; margin-bottom: 16px; }
+    .etc-headline { font-size: 38px; letter-spacing: -1px; line-height: 1.05; margin-bottom: 14px; }
+    .etc-subtext { font-size: 14px; margin-bottom: 22px; line-height: 1.5; }
 
-    .etc-card { padding: 28px 22px 22px; border-radius: 22px; }
-    .etc-discord-orb { width: 72px; height: 72px; margin-bottom: 18px; }
-    .etc-discord-orb svg { width: 30px; height: 30px; }
-    .etc-card-title { font-size: 19px; }
-    .etc-card-sub { font-size: 13.5px; margin-bottom: 20px; }
-    .etc-btn { height: 52px; font-size: 14.5px; }
+    .etc-feature-list { gap: 14px; max-width: 100%; }
+    .etc-feature { gap: 12px; }
+    .etc-feature-icon { width: 36px; height: 36px; border-radius: 9px; }
+    .etc-feature-icon svg { width: 16px; height: 16px; }
+    .etc-feature-text strong { font-size: 14px; }
+    .etc-feature-text span { font-size: 12.5px; }
 
-    /* On mobile, stack chips vertically with full info */
+    .etc-card { padding: 26px 20px 20px; border-radius: 22px; }
+    .etc-discord-orb {
+      width: 78px; height: 78px;
+      border-radius: 22px;
+      margin-bottom: 18px;
+      padding: 3px;
+    }
+    .etc-discord-orb-logo { border-radius: 18px; }
+    .etc-discord-orb-pulse { inset: -8px; border-radius: 26px; }
+    .etc-discord-orb-ring { inset: -16px; border-radius: 30px; }
+    .etc-card-title { font-size: 19px; margin-bottom: 6px; }
+    .etc-card-sub { font-size: 13.5px; margin-bottom: 20px; line-height: 1.5; }
+    .etc-btn { height: 52px; font-size: 14.5px; gap: 8px; }
+    .etc-btn-arrow { width: 16px; height: 16px; }
+
+    /* Stack chips vertically on mobile with proper alignment */
     .etc-card-chips {
       grid-template-columns: 1fr;
-      gap: 12px;
+      gap: 14px;
+      margin-top: 22px;
+      padding-top: 18px;
       text-align: left;
     }
     .etc-card-chips li {
@@ -734,26 +774,31 @@ const styles = `
       align-items: center;
       gap: 12px;
     }
-    .etc-chip-text { gap: 2px; }
+    .etc-chip-icon { width: 34px; height: 34px; border-radius: 10px; }
+    .etc-chip-icon svg { width: 15px; height: 15px; }
     .etc-chip-text strong { font-size: 13px; }
     .etc-chip-text span { font-size: 11.5px; }
 
-    .etc-notice { padding: 12px 14px; }
-    .etc-notice p { font-size: 12px; }
+    .etc-notice { padding: 12px 14px; gap: 10px; border-radius: 12px; }
+    .etc-notice-icon { width: 30px; height: 30px; border-radius: 9px; }
+    .etc-notice-icon svg { width: 14px; height: 14px; }
+    .etc-notice p { font-size: 12px; line-height: 1.45; }
 
-    .etc-footer { margin-top: 32px; gap: 16px; font-size: 12px; }
+    .etc-footer { margin-top: 28px; gap: 14px; font-size: 11.5px; }
 
-    .etc-aurora-a { width: 480px; height: 480px; top: -160px; left: -140px; }
-    .etc-aurora-b { width: 420px; height: 420px; right: -140px; }
-    .etc-aurora-c { width: 320px; height: 320px; }
+    .etc-aurora-a { width: 420px; height: 420px; top: -140px; left: -140px; }
+    .etc-aurora-b { width: 360px; height: 360px; right: -140px; }
+    .etc-aurora-c { width: 280px; height: 280px; }
     .etc-portal { display: none; }
-    .etc-mountains { height: 28%; opacity: 0.7; }
+    .etc-mountains { height: 26%; opacity: 0.6; }
   }
 
-  @media (max-width: 380px) {
-    .etc-headline { font-size: 34px; }
+  @media (max-width: 400px) {
+    .etc-headline { font-size: 32px; letter-spacing: -0.7px; }
+    .etc-help { padding: 8px 10px; }
     .etc-help span { display: none; }
-    .etc-help { padding: 8px; }
+    .etc-card { padding: 22px 18px 18px; }
+    .etc-discord-orb { width: 72px; height: 72px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
