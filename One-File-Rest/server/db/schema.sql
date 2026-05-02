@@ -321,3 +321,98 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_discord_id, cr
 CREATE INDEX IF NOT EXISTS idx_webhook_logs_user ON webhook_logs(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan) WHERE plan IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_plan_expiry ON users(plan_expiry) WHERE plan_expiry IS NOT NULL;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Task #2: Portal Power Features & Staff Command Center
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- TikTok account multi-account switcher
+CREATE TABLE IF NOT EXISTS tiktok_accounts (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  username VARCHAR(200) NOT NULL,
+  account_url VARCHAR(500),
+  is_primary BOOLEAN DEFAULT false,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_tiktok_accounts_user ON tiktok_accounts(user_discord_id);
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS tiktok_account_id INTEGER REFERENCES tiktok_accounts(id);
+
+-- Per-stage document checklist
+CREATE TABLE IF NOT EXISTS case_checklist_items (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  stage VARCHAR(50) NOT NULL,
+  label VARCHAR(300) NOT NULL,
+  required BOOLEAN DEFAULT true,
+  completed BOOLEAN DEFAULT false,
+  completed_at TIMESTAMPTZ,
+  completed_by VARCHAR(20),
+  evidence_id INTEGER REFERENCES evidence(id) ON DELETE SET NULL,
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_case ON case_checklist_items(case_id);
+
+-- Snooze (column on cases)
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS snoozed_until TIMESTAMPTZ;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS snooze_reason TEXT;
+
+-- Knowledge Base
+CREATE TABLE IF NOT EXISTS kb_articles (
+  id SERIAL PRIMARY KEY,
+  slug VARCHAR(200) UNIQUE NOT NULL,
+  title VARCHAR(300) NOT NULL,
+  category VARCHAR(100),
+  body_md TEXT NOT NULL,
+  tags TEXT[] DEFAULT '{}',
+  published BOOLEAN DEFAULT true,
+  view_count INTEGER DEFAULT 0,
+  created_by VARCHAR(20),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_kb_published ON kb_articles(published);
+CREATE INDEX IF NOT EXISTS idx_kb_category ON kb_articles(category);
+
+CREATE TABLE IF NOT EXISTS kb_article_feedback (
+  id SERIAL PRIMARY KEY,
+  article_id INTEGER REFERENCES kb_articles(id) ON DELETE CASCADE,
+  user_discord_id VARCHAR(20),
+  helpful BOOLEAN NOT NULL,
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Web Push subscriptions
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth_key TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_used_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_discord_id);
+
+-- Specialist favorites + presence
+CREATE TABLE IF NOT EXISTS specialist_favorites (
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  staff_discord_id VARCHAR(20) REFERENCES staff(discord_id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_discord_id, staff_discord_id)
+);
+
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS bio TEXT;
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS languages TEXT[] DEFAULT '{}';
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS specialties TEXT[] DEFAULT '{}';
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS timezone VARCHAR(60);
+
+-- Subscription helpers
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS pause_reason TEXT;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN DEFAULT false;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_reason TEXT;

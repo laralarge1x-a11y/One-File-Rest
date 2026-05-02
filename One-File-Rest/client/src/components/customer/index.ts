@@ -7,3 +7,6 @@ export { ToastProvider, useToast } from './Toast';
 export { default as CustomerNav } from './CustomerNav';
 export { default as BottomNav } from './BottomNav';
 export { default as NotificationBell } from './NotificationBell';
+export { default as AccountSwitcher } from './AccountSwitcher';
+export { default as ComplianceWidget } from './ComplianceWidget';
+export { default as SpecialistCard } from './SpecialistCard';

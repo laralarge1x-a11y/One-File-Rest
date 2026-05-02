@@ -65,3 +65,10 @@ build = ["bash", "-c", "cd One-File-Rest && npm install && cd client && npx vite
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
+
+[userenv]
+
+[userenv.shared]
+VAPID_PUBLIC_KEY = "BP8KNphYcJ2RmBq5NPC_QDWKZuVKc1oVz39YtOi2224HyFMN5xWOcVPQNC3T4gVm4hzXVOTTSGnIJFTFfe2O_uY"
+VAPID_PRIVATE_KEY = "MHDY912VF2PnGuQ026gOINUScNrUVmIN0AlQajAEG28"
+VAPID_SUBJECT = "mailto:admin@elitetokclub.com"

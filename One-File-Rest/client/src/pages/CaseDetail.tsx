@@ -5,6 +5,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useSocket } from '../hooks/useSocket';
 import { GlassCard, StatusBadge, LoadingSpinner, EmptyState, useToast } from '../components/customer';
 import { CaseTimeline, type TimelineStage } from '../components/case';
+import DocumentChecklist from '../components/case/DocumentChecklist';
 
 interface Message {
   id: number;
@@ -218,6 +219,22 @@ export default function CaseDetail() {
         )}
       </div>
 
+      {/* Quick actions */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+        <a
+          href={`/api/exports/case/${caseData.id}.pdf`}
+          target="_blank" rel="noreferrer"
+          style={{
+            padding: '8px 14px', fontSize: 12, fontWeight: 600,
+            background: 'var(--bg-glass)', border: '1px solid var(--border)',
+            borderRadius: 8, color: 'var(--text-primary)', textDecoration: 'none',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+          }}
+        >
+          📄 Download PDF
+        </a>
+      </div>
+
       {/* "What's happening now" callout */}
       <GlassCard noHover style={{ padding: 18, marginBottom: 20, background: 'rgba(88,101,242,0.06)', border: '1px solid rgba(88,101,242,0.25)' }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
@@ -380,6 +397,10 @@ export default function CaseDetail() {
             <Info label="Commission" value={caseData.commission_frozen ? 'Frozen' : 'Active'} />
             <Info label="Deadline" value={caseData.appeal_deadline ? new Date(caseData.appeal_deadline).toLocaleString() : '—'} />
           </div>
+          <div style={{ height: 1, background: 'var(--border)', margin: '18px 0' }} />
+          <h4 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)' }}>Document Checklist</h4>
+          <DocumentChecklist caseId={caseData.id} currentStage={caseData.status} canEdit />
+
           {caseData.complianceScore && (
             <>
               <div style={{ height: 1, background: 'var(--border)', margin: '18px 0' }} />

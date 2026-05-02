@@ -1,319 +1,436 @@
-import React, { useEffect, useState, useCallback } from 'react';
+// Staff Command Center — smart dispatcher with hot/stalled/in-flight/my-queue/snoozed tabs.
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../hooks/useAuth';
+import { useSocket } from '../../hooks/useSocket';
 
-const S = {
-  page: { padding: '28px', background: '#0a0a0a', minHeight: '100vh', color: '#fff' } as React.CSSProperties,
-  heading: { fontSize: '22px', fontWeight: '700', color: '#fff', marginBottom: '24px' } as React.CSSProperties,
-  grid6: { display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: '14px', marginBottom: '24px' } as React.CSSProperties,
-  grid2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '24px' } as React.CSSProperties,
-  card: { background: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '18px' } as React.CSSProperties,
-  label: { color: '#666', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em' } as React.CSSProperties,
-  value: { fontSize: '26px', fontWeight: '800', marginTop: '6px', lineHeight: 1 } as React.CSSProperties,
-};
-
-const PLAN_COLORS: Record<string, string> = {
-  basic_guard: '#5865F2', fortnightly_defense: '#57F287', proshield_creator: '#FFD700',
-};
-
-const STATUS_COLORS: Record<string, string> = {
-  pending: '#FEE75C', intake: '#5865F2', profile_built: '#9B59B6', appeal_drafted: '#EB459E',
-  appeal_submitted: '#57F287', awaiting_tiktok: '#F5A623', won: '#57F287', denied: '#ED4245', closed: '#666',
-};
-
-function TimeAgo({ date }: { date: string }) {
-  const d = new Date(date);
-  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (diff < 60) return <>{diff}s ago</>;
-  if (diff < 3600) return <>{Math.floor(diff / 60)}m ago</>;
-  if (diff < 86400) return <>{Math.floor(diff / 3600)}h ago</>;
-  return <>{Math.floor(diff / 86400)}d ago</>;
+interface QueueCase {
+  id: number;
+  account_username: string;
+  violation_type: string;
+  status: string;
+  priority: string;
+  appeal_deadline: string | null;
+  staff_assigned_id: string | null;
+  snoozed_until: string | null;
+  snooze_reason: string | null;
+  updated_at: string;
+  discord_username: string;
+  plan: string | null;
+  staff_name: string | null;
+  hours_to_deadline: number | null;
+  hours_since_update: number;
+  unread_client: number;
+  last_msg_at: string | null;
 }
 
-function Countdown({ deadline }: { deadline: string }) {
-  const d = new Date(deadline);
-  const diff = d.getTime() - Date.now();
-  if (diff <= 0) return <span style={{ color: '#ED4245', fontWeight: '700' }}>OVERDUE</span>;
-  const hrs = Math.floor(diff / 3600000);
-  const mins = Math.floor((diff % 3600000) / 60000);
-  const days = Math.floor(hrs / 24);
-  const color = diff < 24 * 3600000 ? '#ED4245' : diff < 72 * 3600000 ? '#FEE75C' : '#57F287';
-  return <span style={{ color, fontWeight: '700' }}>{days > 0 ? `${days}d ` : ''}{hrs % 24}h {mins}m</span>;
+type TabKey = 'hot' | 'stalled' | 'in_flight' | 'my_queue' | 'snoozed';
+
+const TABS: Array<{ key: TabKey; label: string; emoji: string; color: string }> = [
+  { key: 'hot',       label: 'Hot',       emoji: '🔥', color: '#ED4245' },
+  { key: 'stalled',   label: 'Stalled',   emoji: '⏳', color: '#F5A623' },
+  { key: 'in_flight', label: 'In Flight', emoji: '✈️', color: '#5865F2' },
+  { key: 'my_queue',  label: 'My Queue',  emoji: '⭐', color: '#FEE75C' },
+  { key: 'snoozed',   label: 'Snoozed',   emoji: '💤', color: '#888' },
+];
+
+const PRIORITY_COLOR: Record<string, string> = {
+  critical: '#ED4245', high: '#F5A623', normal: '#5865F2', low: '#888',
+};
+
+function fmtHours(h: number | null): string {
+  if (h === null || h === undefined) return '—';
+  if (h < 0) return `${Math.round(-h)}h overdue`;
+  if (h < 1) return `${Math.round(h * 60)}m`;
+  if (h < 48) return `${Math.round(h)}h`;
+  return `${Math.round(h / 24)}d`;
 }
 
 export default function AdminDashboard() {
-  const { user } = useAuth();
   const navigate = useNavigate();
-  const [stats, setStats] = useState<any>(null);
-  const [activity, setActivity] = useState<any[]>([]);
-  const [alerts, setAlerts] = useState<any[]>([]);
-  const [recentCases, setRecentCases] = useState<any[]>([]);
-  const [needsAttention, setNeedsAttention] = useState<{ deadlines: any[]; stale: any[]; unreplied: any[] }>({ deadlines: [], stale: [], unreplied: [] });
+  const { user } = useAuth();
+  const { socket } = useSocket();
+  const [tab, setTab] = useState<TabKey>('hot');
+  const [data, setData] = useState<Record<TabKey, QueueCase[]>>({ hot: [], stalled: [], in_flight: [], my_queue: [], snoozed: [] });
+  const [counts, setCounts] = useState<Record<TabKey, number>>({ hot: 0, stalled: 0, in_flight: 0, my_queue: 0, snoozed: 0 });
   const [loading, setLoading] = useState(true);
-  const [reportLoading, setReportLoading] = useState(false);
-  const [report, setReport] = useState('');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [hoverPreview, setHoverPreview] = useState<{ id: number; data: any; x: number; y: number } | null>(null);
+  const [snoozeModal, setSnoozeModal] = useState<{ ids: number[] } | null>(null);
+  const [staffList, setStaffList] = useState<Array<{ discord_id: string; name: string }>>([]);
+  const [presence, setPresence] = useState<Record<string, boolean>>({});
 
-  const fetchAll = useCallback(async () => {
+  const list = data[tab] || [];
+
+  const load = useCallback(async () => {
     try {
-      const [statsR, activityR, alertsR, casesR, attentionR] = await Promise.all([
-        fetch('/api/admin/stats', { credentials: 'include' }),
-        fetch('/api/admin/activity', { credentials: 'include' }),
-        fetch('/api/admin/alerts', { credentials: 'include' }),
-        fetch('/api/admin/cases?limit=10', { credentials: 'include' }),
-        fetch('/api/admin/needs-attention', { credentials: 'include' }),
-      ]);
-      if (statsR.ok) setStats(await statsR.json());
-      if (activityR.ok) setActivity(await activityR.json());
-      if (alertsR.ok) setAlerts(await alertsR.json());
-      if (casesR.ok) { const d = await casesR.json(); setRecentCases(d.cases || []); }
-      if (attentionR.ok) {
-        const d = await attentionR.json();
-        setNeedsAttention({ deadlines: d.deadlines || [], stale: d.stale || [], unreplied: d.unreplied || [] });
+      const r = await fetch('/api/admin/queue', { credentials: 'include' });
+      if (r.ok) {
+        const j = await r.json();
+        setData({ hot: j.hot || [], stalled: j.stalled || [], in_flight: j.in_flight || [], my_queue: j.my_queue || [], snoozed: j.snoozed || [] });
+        setCounts(j.counts || { hot: 0, stalled: 0, in_flight: 0, my_queue: 0, snoozed: 0 });
       }
-    } catch (err) { console.error('Dashboard fetch error:', err); }
-    finally { setLoading(false); }
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
-    fetchAll();
-    const iv = setInterval(() => { fetchAll(); }, 10000);
-    return () => clearInterval(iv);
-  }, [fetchAll]);
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, [load]);
 
-  const generateReport = async () => {
-    setReportLoading(true);
-    try {
-      const r = await fetch('/api/admin/weekly-report', { method: 'POST', credentials: 'include' });
-      const d = await r.json();
-      setReport(d.report || '');
-    } catch (err) { console.error('Report error:', err); }
-    setReportLoading(false);
+  useEffect(() => {
+    fetch('/api/admin/staff', { credentials: 'include' })
+      .then((r) => r.ok ? r.json() : [])
+      .then((arr: any[]) => setStaffList(arr.map((s) => ({ discord_id: s.discord_id, name: s.name }))))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!socket) return;
+    const onCase = () => load();
+    const onPresence = (p: { discordId: string; online: boolean }) => {
+      setPresence((prev) => ({ ...prev, [p.discordId]: p.online }));
+    };
+    socket.on('case:created', onCase);
+    socket.on('case:status_changed', onCase);
+    socket.on('case:updated', onCase);
+    socket.on('presence:update', onPresence);
+    return () => {
+      socket.off('case:created', onCase);
+      socket.off('case:status_changed', onCase);
+      socket.off('case:updated', onCase);
+      socket.off('presence:update', onPresence);
+    };
+  }, [socket, load]);
+
+  // Reset active index on tab change
+  useEffect(() => { setActiveIdx(0); setSelected(new Set()); }, [tab]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (snoozeModal) return;
+      const cur = list[activeIdx];
+      if (e.key === 'j') { setActiveIdx((i) => Math.min(list.length - 1, i + 1)); e.preventDefault(); }
+      else if (e.key === 'k') { setActiveIdx((i) => Math.max(0, i - 1)); e.preventDefault(); }
+      else if (e.key === 'x' && cur) {
+        setSelected((prev) => { const s = new Set(prev); s.has(cur.id) ? s.delete(cur.id) : s.add(cur.id); return s; });
+        e.preventDefault();
+      }
+      else if (e.key === 'a' && cur) { bulk('assign', user?.discord_id, [cur.id]); e.preventDefault(); }
+      else if (e.key === 's' && cur) { setSnoozeModal({ ids: [cur.id] }); e.preventDefault(); }
+      else if ((e.key === 'e' || e.key === 'Enter') && cur) { navigate(`/admin/cases/${cur.id}`); }
+      else if (e.key === '1') setTab('hot');
+      else if (e.key === '2') setTab('stalled');
+      else if (e.key === '3') setTab('in_flight');
+      else if (e.key === '4') setTab('my_queue');
+      else if (e.key === '5') setTab('snoozed');
+      else if (e.key === '?') { alert('Shortcuts:\nj/k → navigate\nx → toggle select\na → assign to me\ns → snooze\ne / Enter → open case\n1-5 → switch tabs'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [list, activeIdx, user, navigate, snoozeModal]);
+
+  const bulk = async (action: string, value: any, idsArg?: number[]) => {
+    const ids = idsArg ?? Array.from(selected);
+    if (ids.length === 0) return;
+    const r = await fetch('/api/admin/cases/bulk', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, action, value }),
+    });
+    if (r.ok) {
+      setSelected(new Set());
+      load();
+    }
   };
 
-  if (loading) return (
-    <div style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ width: '40px', height: '40px', border: '3px solid #333', borderTopColor: '#5865F2', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 12px' }} />
-        <p style={{ color: '#666' }}>Loading dashboard...</p>
-      </div>
-    </div>
-  );
+  const snoozeApply = async (until: Date, reason: string) => {
+    if (!snoozeModal) return;
+    if (snoozeModal.ids.length === 1) {
+      await fetch(`/api/admin/cases/${snoozeModal.ids[0]}/snooze`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ until: until.toISOString(), reason }),
+      });
+    } else {
+      await bulk('snooze', until.toISOString(), snoozeModal.ids);
+    }
+    setSnoozeModal(null);
+    load();
+  };
 
-  const statCards = [
-    { label: 'Total Clients', value: stats?.totalClients ?? 0, color: '#5865F2' },
-    { label: 'Active Cases', value: stats?.activeCases ?? 0, color: '#FEE75C' },
-    { label: 'Resolved (Month)', value: stats?.resolvedThisMonth ?? 0, color: '#57F287' },
-    { label: 'Expiring Soon', value: stats?.expiringSoon ?? 0, color: stats?.expiringSoon > 0 ? '#F5A623' : '#57F287' },
-    { label: 'Total Revenue', value: `$${(stats?.totalRevenue ?? 0).toLocaleString()}`, color: '#EB459E' },
-    { label: 'Avg Resolution', value: `${stats?.avgResolutionHours ?? 0}h`, color: '#9B59B6' },
-  ];
+  const handleHover = async (e: React.MouseEvent, c: QueueCase) => {
+    if (hoverPreview?.id === c.id) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setHoverPreview({ id: c.id, data: null, x: rect.right + 12, y: rect.top });
+    try {
+      const r = await fetch(`/api/admin/cases/${c.id}/preview`, { credentials: 'include' });
+      if (r.ok) {
+        const j = await r.json();
+        setHoverPreview((h) => h && h.id === c.id ? { ...h, data: j } : h);
+      }
+    } catch {}
+  };
+
+  const allSelected = list.length > 0 && list.every((c) => selected.has(c.id));
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(list.map((c) => c.id)));
+  };
 
   return (
-    <div style={S.page}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+    <div style={{ padding: 28, color: '#fff', minHeight: '100vh' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>
-          <h1 style={{ ...S.heading, marginBottom: '4px' }}>Overview</h1>
-          <p style={{ color: '#555', fontSize: '13px' }}>Welcome back, {user?.discord_username}. Here's what's happening.</p>
+          <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>Command Center</h1>
+          <div style={{ fontSize: 13, color: '#888' }}>
+            {Object.values(counts).reduce((a, b) => a + b, 0)} active cases •
+            <span style={{ marginLeft: 8, color: '#666' }}>Press <kbd style={kbd}>?</kbd> for shortcuts</span>
+          </div>
         </div>
-        <div style={{ fontSize: '12px', color: '#444' }}>Auto-refreshing every 10s</div>
+        <button onClick={load} style={{ ...btn, background: '#1a1a1a' }}>↻ Refresh</button>
       </div>
 
-      {/* Needs Attention */}
-      {(needsAttention.deadlines.length + needsAttention.stale.length + needsAttention.unreplied.length) > 0 && (
-        <div style={{ ...S.card, marginBottom: 24, borderLeft: '3px solid #ED4245' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#ED4245' }}>
-              🚨 Needs Attention
-              <span style={{ marginLeft: 8, fontSize: 11, color: '#888', fontWeight: 500 }}>
-                {needsAttention.deadlines.length} urgent · {needsAttention.stale.length} stale · {needsAttention.unreplied.length} unreplied
-              </span>
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-            {[
-              { title: 'Deadline < 24h', items: needsAttention.deadlines, color: '#ED4245', kind: 'deadline' as const },
-              { title: 'Stale > 12h', items: needsAttention.stale, color: '#F5A623', kind: 'stale' as const },
-              { title: 'New client messages', items: needsAttention.unreplied, color: '#FEE75C', kind: 'unreplied' as const },
-            ].map((bucket) => (
-              <div key={bucket.title} style={{ background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 8, padding: 12 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: bucket.color, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
-                  {bucket.title} ({bucket.items.length})
-                </div>
-                {bucket.items.length === 0 ? (
-                  <div style={{ color: '#444', fontSize: 12 }}>All clear</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
-                    {bucket.items.slice(0, 6).map((c: any) => {
-                      const subtitle =
-                        bucket.kind === 'deadline'
-                          ? <>Deadline <Countdown deadline={c.appeal_deadline} /></>
-                          : bucket.kind === 'stale'
-                            ? `Waiting ${Math.round(Number(c.stale_hours) || 0)}h on staff reply`
-                            : `${c.unread_count || 1} new message${(c.unread_count || 1) === 1 ? '' : 's'}`;
-                      return (
-                        <button key={c.id} onClick={() => navigate(`/admin/cases/${c.id}`)} style={{
-                          textAlign: 'left', padding: 8, borderRadius: 6,
-                          background: '#111', border: '1px solid #1f1f1f', color: '#fff', cursor: 'pointer',
-                        }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            #{c.id} · @{c.account_username || c.discord_username}
-                          </div>
-                          <div style={{ fontSize: 10, color: '#888', marginTop: 3, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {c.violation_type && (
-                              <span style={{ padding: '1px 6px', borderRadius: 4, background: '#1f1f1f', color: '#bbb' }}>
-                                {String(c.violation_type).replace(/_/g, ' ')}
-                              </span>
-                            )}
-                            {c.plan && (
-                              <span style={{ padding: '1px 6px', borderRadius: 4, background: '#1f1f1f', color: '#bbb' }}>
-                                {c.plan}
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 10, color: '#666', marginTop: 4 }}>{subtitle}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Stat Cards */}
-      <div style={S.grid6}>
-        {statCards.map((s) => (
-          <div key={s.label} style={{ ...S.card, borderTop: `3px solid ${s.color}` }}>
-            <div style={S.label}>{s.label}</div>
-            <div style={{ ...S.value, color: s.color }}>{s.value}</div>
-          </div>
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #1a1a1a', flexWrap: 'wrap' }}>
+        {TABS.map((t, i) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: '10px 16px', background: 'transparent', border: 'none',
+              borderBottom: '2px solid ' + (tab === t.key ? t.color : 'transparent'),
+              color: tab === t.key ? '#fff' : '#888',
+              fontWeight: 600, fontSize: 13, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            <span>{t.emoji}</span>
+            <span>{t.label}</span>
+            <span style={{
+              padding: '1px 7px', fontSize: 11, fontWeight: 700,
+              background: tab === t.key ? t.color : '#1a1a1a',
+              color: tab === t.key ? '#000' : '#888',
+              borderRadius: 999,
+            }}>{counts[t.key]}</span>
+            <span style={{ fontSize: 9, color: '#444', marginLeft: 4 }}>{i + 1}</span>
+          </button>
         ))}
       </div>
 
-      {/* Activity + Alerts */}
-      <div style={S.grid2}>
-        {/* Activity feed */}
-        <div style={S.card}>
-          <div style={{ fontSize: '13px', fontWeight: '700', color: '#fff', marginBottom: '14px' }}>⚡ Live Activity Feed</div>
-          <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-            {activity.length === 0 ? (
-              <p style={{ color: '#444', fontSize: '13px' }}>No recent activity</p>
-            ) : activity.map((item, i) => (
-              <div key={i} style={{ display: 'flex', gap: '10px', padding: '8px 0', borderBottom: '1px solid #1a1a1a', alignItems: 'flex-start' }}>
-                <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: '#1a1a1a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', flexShrink: 0 }}>
-                  {item.action?.includes('case') ? '📋' : item.action?.includes('message') ? '💬' : item.action?.includes('broadcast') ? '📢' : '⚙️'}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: '#ccc', fontSize: '12px' }}>
-                    <span style={{ color: '#5865F2', fontWeight: '600' }}>{item.discord_username || 'System'}</span> {item.action?.replace(/_/g, ' ')}
-                  </div>
-                  <div style={{ color: '#555', fontSize: '11px', marginTop: '2px' }}><TimeAgo date={item.created_at} /></div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Bulk actions */}
+      {selected.size > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+          style={{
+            padding: '10px 14px', background: '#1a1a1a',
+            border: '1px solid #5865F2', borderRadius: 10,
+            marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{selected.size} selected</span>
+          <select onChange={(e) => { if (e.target.value) bulk('assign', e.target.value); e.target.value = ''; }} style={sel}>
+            <option value="">Assign to…</option>
+            {staffList.map((s) => <option key={s.discord_id} value={s.discord_id}>{s.name}</option>)}
+          </select>
+          <select onChange={(e) => { if (e.target.value) bulk('priority', e.target.value); e.target.value = ''; }} style={sel}>
+            <option value="">Set priority…</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="normal">Normal</option>
+            <option value="low">Low</option>
+          </select>
+          <button onClick={() => setSnoozeModal({ ids: Array.from(selected) })} style={{ ...btn, background: '#333' }}>💤 Snooze</button>
+          <button onClick={() => setSelected(new Set())} style={{ ...btn, background: 'transparent', border: '1px solid #333' }}>Clear</button>
+        </motion.div>
+      )}
 
-        {/* Urgent alerts */}
-        <div style={S.card}>
-          <div style={{ fontSize: '13px', fontWeight: '700', color: '#fff', marginBottom: '14px' }}>🚨 Urgent Deadlines</div>
-          {alerts.length === 0 ? (
-            <p style={{ color: '#444', fontSize: '13px' }}>No urgent deadlines — all clear!</p>
-          ) : alerts.map((a) => (
-            <div key={a.id} style={{ background: '#1a0a0a', border: '1px solid #ED4245', borderRadius: '8px', padding: '12px', marginBottom: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontWeight: '600', fontSize: '13px', color: '#fff' }}>{a.discord_username || 'Unknown'}</div>
-                <div style={{ fontSize: '11px', background: '#ED424520', color: '#ED4245', padding: '2px 8px', borderRadius: '4px' }}>Case #{a.id}</div>
+      {/* List */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 60, color: '#666' }}>Loading…</div>
+      ) : list.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 60, color: '#666', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: 12 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>{TABS.find((t) => t.key === tab)?.emoji}</div>
+          <div style={{ fontSize: 14 }}>No cases in this lane.</div>
+        </div>
+      ) : (
+        <div style={{ background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: 12, overflow: 'hidden' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 140px 120px 120px 90px 60px', gap: 10, padding: '10px 14px', fontSize: 10, fontWeight: 700, color: '#666', textTransform: 'uppercase', letterSpacing: 0.6, borderBottom: '1px solid #1a1a1a' }}>
+            <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ accentColor: '#5865F2' }} />
+            <div>Case</div>
+            <div>Assigned</div>
+            <div>Status</div>
+            <div>{tab === 'snoozed' ? 'Until' : tab === 'stalled' ? 'Stalled' : 'Deadline'}</div>
+            <div>Plan</div>
+            <div></div>
+          </div>
+          {list.map((c, i) => (
+            <div
+              key={c.id}
+              onMouseEnter={(e) => handleHover(e, c)}
+              onMouseLeave={() => setHoverPreview(null)}
+              onClick={() => setActiveIdx(i)}
+              onDoubleClick={() => navigate(`/admin/cases/${c.id}`)}
+              style={{
+                display: 'grid', gridTemplateColumns: '32px 1fr 140px 120px 120px 90px 60px',
+                gap: 10, padding: '12px 14px',
+                borderBottom: '1px solid #161616',
+                background: activeIdx === i ? 'rgba(88,101,242,0.08)' : selected.has(c.id) ? 'rgba(88,101,242,0.04)' : 'transparent',
+                borderLeft: '3px solid ' + (activeIdx === i ? '#5865F2' : 'transparent'),
+                alignItems: 'center', cursor: 'pointer',
+              }}
+            >
+              <input
+                type="checkbox" checked={selected.has(c.id)}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  setSelected((prev) => { const s = new Set(prev); e.target.checked ? s.add(c.id) : s.delete(c.id); return s; });
+                }}
+                style={{ accentColor: '#5865F2' }}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  #{c.id} • @{c.account_username}
+                  {c.unread_client > 0 && <span style={{ background: '#ED4245', color: '#fff', fontSize: 10, padding: '1px 6px', borderRadius: 999, fontWeight: 700 }}>{c.unread_client} unread</span>}
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: PRIORITY_COLOR[c.priority] || '#888' }} />
+                </div>
+                <div style={{ fontSize: 11, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.violation_type} • {c.discord_username}
+                  {c.snooze_reason && tab === 'snoozed' && ` — ${c.snooze_reason}`}
+                </div>
               </div>
-              <div style={{ color: '#888', fontSize: '12px', marginTop: '4px' }}>{a.violation_type}</div>
-              <div style={{ marginTop: '6px', fontSize: '12px' }}>Deadline: <Countdown deadline={a.appeal_deadline} /></div>
-              <button
-                onClick={() => navigate(`/admin/cases`)}
-                style={{ marginTop: '8px', background: '#ED4245', color: '#fff', border: 'none', borderRadius: '6px', padding: '4px 12px', fontSize: '11px', cursor: 'pointer', fontWeight: '600' }}
-              >
-                View Case →
-              </button>
+              <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                {c.staff_assigned_id ? (
+                  <>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: presence[c.staff_assigned_id] ? '#57F287' : '#444' }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.staff_name || '?'}</span>
+                  </>
+                ) : (
+                  <span style={{ color: '#666', fontStyle: 'italic' }}>Unassigned</span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: '#aaa', textTransform: 'capitalize' }}>{c.status.replace(/_/g, ' ')}</div>
+              <div style={{ fontSize: 11, color: tab === 'stalled' ? '#F5A623' : (c.hours_to_deadline !== null && c.hours_to_deadline < 24 ? '#ED4245' : '#aaa') }}>
+                {tab === 'snoozed' && c.snoozed_until ? new Date(c.snoozed_until).toLocaleString() :
+                 tab === 'stalled' ? `${Math.round(c.hours_since_update)}h idle` :
+                 fmtHours(c.hours_to_deadline)}
+              </div>
+              <div style={{ fontSize: 11, color: '#666' }}>{c.plan ? c.plan.replace(/_/g, ' ').slice(0, 10) : '—'}</div>
+              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                <button onClick={(e) => { e.stopPropagation(); navigate(`/admin/cases/${c.id}`); }} title="Open" style={iconBtn}>→</button>
+              </div>
             </div>
           ))}
         </div>
-      </div>
-
-      {/* Recent Cases */}
-      <div style={{ ...S.card, marginBottom: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-          <div style={{ fontSize: '13px', fontWeight: '700', color: '#fff' }}>📋 Recent Cases</div>
-          <button onClick={() => navigate('/admin/cases')} style={{ background: 'none', border: '1px solid #333', color: '#888', borderRadius: '6px', padding: '4px 12px', fontSize: '12px', cursor: 'pointer' }}>View All</button>
-        </div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-            <thead>
-              <tr style={{ color: '#555', textTransform: 'uppercase', fontSize: '10px', letterSpacing: '0.06em' }}>
-                {['#', 'Client', 'Plan', 'Violation', 'Status', 'Created', 'Deadline'].map((h) => (
-                  <th key={h} style={{ padding: '6px 12px', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #1a1a1a' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {recentCases.map((c) => (
-                <tr key={c.id} onClick={() => navigate(`/admin/cases/${c.id}`)} style={{ cursor: 'pointer', transition: 'background 0.1s' }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = '#151515')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
-                  <td style={{ padding: '10px 12px', color: '#666' }}>#{c.id}</td>
-                  <td style={{ padding: '10px 12px', color: '#fff', fontWeight: '500' }}>{c.discord_username}</td>
-                  <td style={{ padding: '10px 12px' }}>
-                    <span style={{ background: `${PLAN_COLORS[c.plan] || '#333'}22`, color: PLAN_COLORS[c.plan] || '#666', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600' }}>
-                      {c.plan?.replace(/_/g, ' ') || 'None'}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px 12px', color: '#aaa' }}>{c.violation_type || '—'}</td>
-                  <td style={{ padding: '10px 12px' }}>
-                    <span style={{ background: `${STATUS_COLORS[c.status] || '#333'}22`, color: STATUS_COLORS[c.status] || '#666', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600' }}>{c.status}</span>
-                  </td>
-                  <td style={{ padding: '10px 12px', color: '#666' }}>{new Date(c.created_at).toLocaleDateString()}</td>
-                  <td style={{ padding: '10px 12px' }}>{c.appeal_deadline ? <Countdown deadline={c.appeal_deadline} /> : <span style={{ color: '#444' }}>—</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {recentCases.length === 0 && <p style={{ color: '#444', textAlign: 'center', padding: '24px', fontSize: '13px' }}>No cases yet</p>}
-        </div>
-      </div>
-
-      {/* Quick Actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '14px' }}>
-        <button onClick={() => navigate('/admin/broadcast')} style={{ ...S.card, border: '1px solid #5865F2', cursor: 'pointer', textAlign: 'left', color: '#fff', transition: 'all 0.15s' }}
-          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = '#5865F210')}
-          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = '#111')}>
-          <div style={{ fontSize: '22px', marginBottom: '8px' }}>📢</div>
-          <div style={{ fontWeight: '700', fontSize: '14px' }}>New Broadcast</div>
-          <div style={{ color: '#666', fontSize: '12px', marginTop: '4px' }}>Send message to clients</div>
-        </button>
-        <button onClick={() => navigate('/admin/clients?status=expiring')} style={{ ...S.card, border: '1px solid #F5A623', cursor: 'pointer', textAlign: 'left', color: '#fff', transition: 'all 0.15s' }}
-          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = '#F5A62310')}
-          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = '#111')}>
-          <div style={{ fontSize: '22px', marginBottom: '8px' }}>⏰</div>
-          <div style={{ fontWeight: '700', fontSize: '14px' }}>Expiring Plans</div>
-          <div style={{ color: '#666', fontSize: '12px', marginTop: '4px' }}>{stats?.expiringSoon ?? 0} expiring in 7 days</div>
-        </button>
-        <button onClick={generateReport} disabled={reportLoading} style={{ ...S.card, border: '1px solid #9B59B6', cursor: 'pointer', textAlign: 'left', color: '#fff', transition: 'all 0.15s', opacity: reportLoading ? 0.7 : 1 }}
-          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = '#9B59B610')}
-          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = '#111')}>
-          <div style={{ fontSize: '22px', marginBottom: '8px' }}>📈</div>
-          <div style={{ fontWeight: '700', fontSize: '14px' }}>{reportLoading ? 'Generating...' : 'Weekly Report'}</div>
-          <div style={{ color: '#666', fontSize: '12px', marginTop: '4px' }}>AI-generated summary</div>
-        </button>
-      </div>
-
-      {report && (
-        <div style={{ ...S.card, marginTop: '20px', borderColor: '#9B59B6' }}>
-          <div style={{ fontWeight: '700', color: '#9B59B6', marginBottom: '10px' }}>📈 Weekly Report</div>
-          <pre style={{ color: '#ccc', fontSize: '13px', whiteSpace: 'pre-wrap', lineHeight: 1.7, margin: 0 }}>{report}</pre>
-        </div>
       )}
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      {/* Hover preview */}
+      <AnimatePresence>
+        {hoverPreview && (
+          <motion.div
+            initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}
+            style={{
+              position: 'fixed', left: Math.min(hoverPreview.x, window.innerWidth - 340),
+              top: Math.min(hoverPreview.y, window.innerHeight - 280),
+              width: 320, background: '#0a0a0a', border: '1px solid #2a2a2a',
+              borderRadius: 10, padding: 14, zIndex: 1000, pointerEvents: 'none',
+              boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
+            }}
+          >
+            {!hoverPreview.data ? (
+              <div style={{ color: '#666', fontSize: 12 }}>Loading…</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>#{hoverPreview.data.id} • @{hoverPreview.data.account_username}</div>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                  {hoverPreview.data.violation_type} • {hoverPreview.data.discord_username}
+                </div>
+                {hoverPreview.data.violation_description && (
+                  <div style={{ fontSize: 11, color: '#aaa', marginBottom: 8, lineHeight: 1.5 }}>
+                    {String(hoverPreview.data.violation_description).slice(0, 220)}
+                    {String(hoverPreview.data.violation_description).length > 220 ? '…' : ''}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#666', marginBottom: 8 }}>
+                  <span>💬 {hoverPreview.data.msg_count}</span>
+                  <span>📎 {hoverPreview.data.ev_count}</span>
+                  {hoverPreview.data.compliance_score !== null && hoverPreview.data.compliance_score !== undefined && (
+                    <span style={{ color: '#57F287' }}>Score {Math.round(hoverPreview.data.compliance_score)}</span>
+                  )}
+                </div>
+                {hoverPreview.data.last_message && (
+                  <div style={{ fontSize: 11, color: '#888', borderLeft: '2px solid #333', paddingLeft: 8, fontStyle: 'italic' }}>
+                    "{String(hoverPreview.data.last_message).slice(0, 140)}"
+                  </div>
+                )}
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Snooze modal */}
+      <AnimatePresence>
+        {snoozeModal && (
+          <SnoozeModal onClose={() => setSnoozeModal(null)} onApply={snoozeApply} count={snoozeModal.ids.length} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
+
+function SnoozeModal({ onClose, onApply, count }: { onClose: () => void; onApply: (d: Date, r: string) => void; count: number }) {
+  const [reason, setReason] = useState('');
+  const presets = [
+    { label: '4h', hours: 4 }, { label: 'Tomorrow 9am', hours: -1 },
+    { label: '2 days', hours: 48 }, { label: '1 week', hours: 168 },
+  ];
+  const apply = (hours: number) => {
+    let when: Date;
+    if (hours === -1) {
+      when = new Date(); when.setDate(when.getDate() + 1); when.setHours(9, 0, 0, 0);
+    } else when = new Date(Date.now() + hours * 3600_000);
+    onApply(when, reason);
+  };
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }}
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 380, background: '#0d0d0d', border: '1px solid #2a2a2a', borderRadius: 14, padding: 20 }}
+      >
+        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: '#fff' }}>Snooze {count} case{count === 1 ? '' : 's'}</h3>
+        <input
+          placeholder="Reason (optional)"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          style={{ width: '100%', padding: '10px 12px', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 8, color: '#fff', marginBottom: 12, fontSize: 13, outline: 'none' }}
+        />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          {presets.map((p) => (
+            <button key={p.label} onClick={() => apply(p.hours)} style={{ padding: '10px', background: '#1a1a1a', border: '1px solid #2a2a2a', color: '#fff', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <button onClick={onClose} style={{ marginTop: 12, width: '100%', padding: 10, background: 'transparent', border: '1px solid #333', color: '#888', borderRadius: 8, cursor: 'pointer' }}>Cancel</button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+const btn: React.CSSProperties = { padding: '8px 14px', background: '#5865F2', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' };
+const iconBtn: React.CSSProperties = { padding: '4px 10px', background: 'transparent', border: '1px solid #2a2a2a', color: '#888', borderRadius: 6, fontSize: 14, cursor: 'pointer' };
+const sel: React.CSSProperties = { padding: '7px 10px', background: '#0a0a0a', border: '1px solid #333', color: '#fff', borderRadius: 6, fontSize: 12 };
+const kbd: React.CSSProperties = { padding: '1px 6px', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, fontSize: 10, fontFamily: 'monospace', color: '#aaa' };

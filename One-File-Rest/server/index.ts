@@ -28,9 +28,17 @@ import complianceRoutes from './routes/compliance.js';
 import adminRoutes from './routes/admin.js';
 import botBridgeRoutes from './routes/botbridge.js';
 import notificationsRoutes from './routes/notifications.js';
+import pushRoutes from './routes/push.js';
+import accountsRoutes from './routes/accounts.js';
+import kbRoutes from './routes/kb.js';
+import checklistRoutes from './routes/checklist.js';
+import exportsRoutes from './routes/exports.js';
+import staffPublicRoutes from './routes/staff-public.js';
+import adminQueueRoutes from './routes/admin-queue.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
+import { trackConnect, trackDisconnect } from './services/presence.js';
 
 // ─── Environment validation ────────────────────────────────────────────────
 const REQUIRED_ENV: Array<{ key: string; reason: string }> = [
@@ -169,8 +177,15 @@ mount('/api/ai', requireAuth, aiRoutes);
 mount('/api/analytics', requireStaff, analyticsRoutes);
 mount('/api/subscriptions', requireAuth, subscriptionsRoutes);
 mount('/api/compliance', requireAuth, complianceRoutes);
+mount('/api/admin', requireStaff, adminQueueRoutes);
 mount('/api/admin', requireStaff, adminRoutes);
 mount('/api/notifications', requireAuth, notificationsRoutes);
+mount('/api/push', requireAuth, pushRoutes);
+mount('/api/accounts', requireAuth, accountsRoutes);
+mount('/api/kb', requireAuth, kbRoutes);
+mount('/api/checklist', requireAuth, checklistRoutes);
+mount('/api/exports', requireAuth, exportsRoutes);
+mount('/api/staff-public', requireAuth, staffPublicRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -221,6 +236,8 @@ io.on('connection', async (socket) => {
   // Auto-join the user's own private room — clients NEVER pick this.
   socket.join(`user:${discordId}`);
   if (isStaff) socket.join('admin');
+  trackConnect(discordId, socket.id, io);
+  socket.on('disconnect', () => trackDisconnect(discordId, socket.id, io));
 
   // Verify the user owns/has access to a case before joining its room.
   async function canAccessCase(caseId: number): Promise<boolean> {

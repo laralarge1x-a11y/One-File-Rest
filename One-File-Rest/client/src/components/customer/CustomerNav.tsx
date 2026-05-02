@@ -3,11 +3,14 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuth } from '../../hooks/useAuth';
 import NotificationBell from './NotificationBell';
+import AccountSwitcher from './AccountSwitcher';
 
 const NAV_ITEMS = [
-  { to: '/dashboard', label: 'Dashboard' },
-  { to: '/cases',     label: 'My Cases' },
-  { to: '/messages',  label: 'Messages' },
+  { to: '/dashboard',    label: 'Dashboard' },
+  { to: '/cases',        label: 'My Cases' },
+  { to: '/messages',     label: 'Messages' },
+  { to: '/kb',           label: 'Knowledge' },
+  { to: '/specialists',  label: 'Specialists' },
 ];
 
 function Avatar({ url, name, size = 32 }: { url?: string; name?: string; size?: number }) {
@@ -102,7 +105,8 @@ export default function CustomerNav() {
             ))}
           </nav>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="nav-desktop"><AccountSwitcher /></div>
             <NotificationBell />
             <div ref={menuRef} className="nav-desktop" style={{ position: 'relative' }}>
               <button onClick={() => setMenuOpen((v) => !v)} style={{
@@ -136,6 +140,7 @@ export default function CustomerNav() {
                     {NAV_ITEMS.map((it) => (
                       <button key={it.to} onClick={() => navigate(it.to)} style={menuItem}>{it.label}</button>
                     ))}
+                    <button onClick={() => navigate('/subscription')} style={menuItem}>Account & Plan</button>
                     <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
                     <button onClick={logout} style={{ ...menuItem, color: 'var(--danger)' }}>Logout</button>
                   </motion.div>

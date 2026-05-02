@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, useInView, useMotionValue, useTransform, animate } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import { useSocket } from '../hooks/useSocket';
-import { GlassCard, StatusBadge, LoadingSpinner, EmptyState } from '../components/customer';
+import { GlassCard, StatusBadge, LoadingSpinner, EmptyState, ComplianceWidget } from '../components/customer';
 
 interface Case {
   id: number;
@@ -154,6 +154,23 @@ export default function Dashboard() {
         </GlassCard>
       </motion.div>
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 14, marginBottom: 20 }} className="dash-widgets">
+        <ComplianceWidget discordId={user?.discord_id} />
+        <div onClick={() => navigate('/kb')} style={{
+          cursor: 'pointer',
+          background: 'var(--bg-glass)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-lg)', padding: 18,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.6 }}>Knowledge Base</div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginTop: 4 }}>Browse guides & playbooks</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Policy explainers, appeal templates, escalation tactics.</div>
+          </div>
+          <span style={{ fontSize: 22, color: 'var(--accent)' }}>→</span>
+        </div>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 28 }}>
         {[
           { label: 'Total Cases',   value: total,    color: '#5865F2', icon: '📋' },
@@ -247,6 +264,11 @@ export default function Dashboard() {
           <span>💬</span> Message Staff
         </button>
       </div>
+      <style>{`
+        @media (max-width: 720px) {
+          .dash-widgets { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
     </div>
   );
 }

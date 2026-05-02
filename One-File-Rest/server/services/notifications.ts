@@ -1,5 +1,6 @@
 import pool from '../db/client.js';
 import { getIO } from '../socket-store.js';
+import { sendPushToUser } from './push.js';
 
 export interface CreateNotificationOptions {
   userDiscordId: string;
@@ -22,6 +23,13 @@ export async function createNotification(opts: CreateNotificationOptions) {
       const io = getIO();
       io.to(`user:${opts.userDiscordId}`).emit('notification:new', notification);
     } catch {}
+    // Web push (best effort)
+    sendPushToUser(opts.userDiscordId, {
+      title: opts.title,
+      body: opts.message,
+      url: opts.actionUrl || (opts.caseId ? `/cases/${opts.caseId}` : '/dashboard'),
+      tag: `notif-${notification.id}`,
+    }).catch(() => {});
     return notification;
   } catch (err) {
     console.error('[notifications] createNotification failed:', err);

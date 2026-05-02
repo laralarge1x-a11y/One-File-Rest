@@ -11,6 +11,7 @@ const navItems = [
   { to: '/admin/staff', label: 'Staff', icon: '👨‍💼' },
   { to: '/admin/broadcast', label: 'Broadcast', icon: '📢' },
   { to: '/admin/templates', label: 'Templates', icon: '📝' },
+  { to: '/admin/kb', label: 'Knowledge Base', icon: '📚' },
   { to: '/admin/settings', label: 'Settings', icon: '⚙️' },
 ];
 

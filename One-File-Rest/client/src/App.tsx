@@ -18,9 +18,13 @@ import Messages from './pages/Messages';
 import PolicyAlerts from './pages/PolicyAlerts';
 import ViolationTimeline from './pages/ViolationTimeline';
 import Subscription from './pages/Subscription';
+import KnowledgeBase from './pages/KnowledgeBase';
+import KbArticle from './pages/KbArticle';
+import Specialists from './pages/Specialists';
 
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
+import KnowledgeBaseAdmin from './pages/admin/KnowledgeBaseAdmin';
 import ClientList from './pages/admin/ClientList';
 import ClientProfile from './pages/admin/ClientProfile';
 import CaseWorkspace from './pages/admin/CaseWorkspace';
@@ -90,6 +94,9 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
         <Route path="/policies"    element={<ProtectedRoute><ClientLayout>{wrap(<PolicyAlerts />)}</ClientLayout></ProtectedRoute>} />
         <Route path="/timeline"    element={<ProtectedRoute><ClientLayout>{wrap(<ViolationTimeline />)}</ClientLayout></ProtectedRoute>} />
         <Route path="/subscription" element={<ProtectedRoute><ClientLayout>{wrap(<Subscription />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/kb"           element={<ProtectedRoute><ClientLayout>{wrap(<KnowledgeBase />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/kb/:slug"     element={<ProtectedRoute><ClientLayout>{wrap(<KbArticle />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/specialists"  element={<ProtectedRoute><ClientLayout>{wrap(<Specialists />)}</ClientLayout></ProtectedRoute>} />
 
         {/* ── Admin Routes ── */}
         <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
@@ -102,6 +109,7 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
         <Route path="/admin/templates"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><TemplateBuilder /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/policies"    element={<ProtectedRoute requiredRole="staff"><AdminLayout><PolicyManagement /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/ai"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><AITools /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/kb"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><KnowledgeBaseAdmin /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/settings"    element={<ProtectedRoute requiredRole="owner"><AdminLayout><AdminSettings /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/staff"       element={<ProtectedRoute requiredRole="owner"><AdminLayout><StaffManagement /></AdminLayout></ProtectedRoute>} />
 
