@@ -1,16 +1,17 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence } from 'framer-motion';
 import { useAuth } from './hooks/useAuth';
 import { useSocket } from './hooks/useSocket';
 
 // Layout
-import Sidebar from './components/layout/Sidebar';
-import Header from './components/layout/Header';
 import AdminSidebar from './components/layout/AdminSidebar';
+import { CustomerNav, BottomNav, ToastProvider, PageTransition, LoadingSpinner } from './components/customer';
 
 // Client Pages
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Cases from './pages/Cases';
 import CaseDetail from './pages/CaseDetail';
 import NewCase from './pages/NewCase';
 import Messages from './pages/Messages';
@@ -37,12 +38,10 @@ const STAFF_ROLES = ['support', 'case_manager', 'owner', 'admin'];
 const ADMIN_ROLES = ['owner', 'admin'];
 
 const ClientLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="app-layout">
-    <Sidebar />
-    <div className="main-content">
-      <Header />
-      <div className="page-content">{children}</div>
-    </div>
+  <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+    <CustomerNav />
+    <main style={{ flex: 1, paddingBottom: 0 }}>{children}</main>
+    <BottomNav />
   </div>
 );
 
@@ -61,7 +60,7 @@ const ProtectedRoute: React.FC<{
 }> = ({ children, requiredRole }) => {
   const { user, isLoading } = useAuth();
 
-  if (isLoading) return <div className="loading">Loading...</div>;
+  if (isLoading) return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}><LoadingSpinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
 
   if (requiredRole === 'staff' && !STAFF_ROLES.includes(user.role)) {
@@ -74,54 +73,75 @@ const ProtectedRoute: React.FC<{
   return <>{children}</>;
 };
 
+const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
+  const location = useLocation();
+  const isAdminRoute = location.pathname.startsWith('/admin');
+  const wrap = (el: React.ReactNode) => isAdminRoute ? el : <PageTransition>{el}</PageTransition>;
+
+  return (
+    <AnimatePresence mode="wait">
+      <Routes location={location} key={location.pathname}>
+        {/* ── Client Routes ── */}
+        <Route path="/dashboard"   element={<ProtectedRoute><ClientLayout>{wrap(<Dashboard />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/cases"       element={<ProtectedRoute><ClientLayout>{wrap(<Cases />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/cases/new"   element={<ProtectedRoute><ClientLayout>{wrap(<NewCase />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/cases/:id"   element={<ProtectedRoute><ClientLayout>{wrap(<CaseDetail />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/messages"    element={<ProtectedRoute><ClientLayout>{wrap(<Messages />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/policies"    element={<ProtectedRoute><ClientLayout>{wrap(<PolicyAlerts />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/timeline"    element={<ProtectedRoute><ClientLayout>{wrap(<ViolationTimeline />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/subscription" element={<ProtectedRoute><ClientLayout>{wrap(<Subscription />)}</ClientLayout></ProtectedRoute>} />
+
+        {/* ── Admin Routes ── */}
+        <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/cases"       element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseManagement /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/clients"     element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientList /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/clients/:id" element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientProfile /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/analytics"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><Analytics /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/broadcast"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><BulkBroadcast /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/templates"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><TemplateBuilder /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/policies"    element={<ProtectedRoute requiredRole="staff"><AdminLayout><PolicyManagement /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/ai"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><AITools /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/settings"    element={<ProtectedRoute requiredRole="owner"><AdminLayout><AdminSettings /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/staff"       element={<ProtectedRoute requiredRole="owner"><AdminLayout><StaffManagement /></AdminLayout></ProtectedRoute>} />
+
+        {/* ── Root redirect ── */}
+        <Route path="/" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />
+        <Route path="*" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />
+      </Routes>
+    </AnimatePresence>
+  );
+};
+
 export default function App() {
   const { user, isLoading } = useAuth();
   useSocket();
 
-  if (isLoading) return <div className="loading">Loading...</div>;
+  if (isLoading) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+      <LoadingSpinner label="Loading..." />
+    </div>
+  );
 
   if (!user) {
     return (
-      <Router>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
-      </Router>
+      <ToastProvider>
+        <Router>
+          <Routes>
+            <Route path="/login" element={<PageTransition><Login /></PageTransition>} />
+            <Route path="*" element={<Navigate to="/login" replace />} />
+          </Routes>
+        </Router>
+      </ToastProvider>
     );
   }
 
   const isStaff = STAFF_ROLES.includes(user.role);
 
   return (
-    <Router>
-      <Routes>
-        {/* ── Client Routes ── */}
-        <Route path="/dashboard" element={<ProtectedRoute><ClientLayout><Dashboard /></ClientLayout></ProtectedRoute>} />
-        <Route path="/cases/new" element={<ProtectedRoute><ClientLayout><NewCase /></ClientLayout></ProtectedRoute>} />
-        <Route path="/cases/:id" element={<ProtectedRoute><ClientLayout><CaseDetail /></ClientLayout></ProtectedRoute>} />
-        <Route path="/messages" element={<ProtectedRoute><ClientLayout><Messages /></ClientLayout></ProtectedRoute>} />
-        <Route path="/policies" element={<ProtectedRoute><ClientLayout><PolicyAlerts /></ClientLayout></ProtectedRoute>} />
-        <Route path="/timeline" element={<ProtectedRoute><ClientLayout><ViolationTimeline /></ClientLayout></ProtectedRoute>} />
-        <Route path="/subscription" element={<ProtectedRoute><ClientLayout><Subscription /></ClientLayout></ProtectedRoute>} />
-
-        {/* ── Admin Routes ── */}
-        <Route path="/admin" element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/cases" element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseManagement /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/clients" element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientList /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/clients/:id" element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientProfile /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/analytics" element={<ProtectedRoute requiredRole="staff"><AdminLayout><Analytics /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/broadcast" element={<ProtectedRoute requiredRole="staff"><AdminLayout><BulkBroadcast /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/templates" element={<ProtectedRoute requiredRole="staff"><AdminLayout><TemplateBuilder /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/policies" element={<ProtectedRoute requiredRole="staff"><AdminLayout><PolicyManagement /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/ai" element={<ProtectedRoute requiredRole="staff"><AdminLayout><AITools /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/settings" element={<ProtectedRoute requiredRole="owner"><AdminLayout><AdminSettings /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/staff" element={<ProtectedRoute requiredRole="owner"><AdminLayout><StaffManagement /></AdminLayout></ProtectedRoute>} />
-
-        {/* ── Root redirect ── */}
-        <Route path="/" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />
-        <Route path="*" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />
-      </Routes>
-    </Router>
+    <ToastProvider>
+      <Router>
+        <AnimatedRoutes isStaff={isStaff} />
+      </Router>
+    </ToastProvider>
   );
 }

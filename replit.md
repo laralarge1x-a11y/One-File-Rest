@@ -4,7 +4,7 @@ A full-stack platform for managing TikTok account violation appeals, enabling cr
 
 ## Architecture
 
-- **Frontend**: React 18 + TypeScript + Tailwind CSS + Vite (port 5000)
+- **Frontend**: React 18 + TypeScript + Tailwind CSS + Vite (port 5000), framer-motion for animations, custom dark-theme design system
 - **Backend**: Node.js + Express + TypeScript (port 3000)
 - **Database**: PostgreSQL (Replit built-in)
 - **Real-time**: Socket.io
@@ -19,10 +19,15 @@ One-File-Rest/
 ├── bot-bridge/        # Discord bot bridge (port 3001)
 ├── client/            # React frontend (port 5000)
 │   └── src/
-│       ├── components/layout/  # Sidebar, Header, AdminSidebar
-│       ├── hooks/              # useAuth, useSocket, useNotifications
-│       ├── pages/              # Login, Dashboard, CaseDetail, etc.
-│       └── App.tsx
+│       ├── components/customer/ # Customer UI kit (PageTransition, GlassCard,
+│       │                        # StatusBadge, LoadingSpinner, EmptyState,
+│       │                        # Toast, CustomerNav, BottomNav)
+│       ├── components/layout/   # AdminSidebar (legacy Sidebar/Header unused)
+│       ├── hooks/               # useAuth, useSocket, useNotifications
+│       ├── pages/               # Login, Dashboard, Cases, CaseDetail,
+│       │                        # NewCase (3-step wizard), Messages, etc.
+│       ├── styles/              # design-system.css (dark theme + tokens)
+│       └── App.tsx              # Wraps routes in AnimatePresence + ToastProvider
 ├── server/            # Express backend (port 3000)
 │   ├── auth/          # Discord OAuth strategy + middleware
 │   ├── db/            # PostgreSQL client + schema.sql
@@ -59,6 +64,32 @@ To enable full functionality, set these secrets:
 5. Evidence upload and analysis via Cloudinary
 6. Admin dashboard with analytics and staff management
 7. Policy alerts and compliance scoring
+
+## Customer UI Redesign (May 2026)
+
+Premium dark-theme customer portal redesign:
+- `client/src/styles/design-system.css` — design tokens (colors, spacing, radii,
+  shadows, motion), dark scrollbar, blob/shimmer/shake keyframes, and
+  `.field` / `.btn-primary` / `.btn-ghost` / `.page-wrap` utilities. Imported
+  in `main.tsx`.
+- 8 shared components in `components/customer/` exported via `index.ts`.
+  `GlassCard` is the canonical interactive container — when given `onClick`
+  it auto-applies `role="button"`, `tabIndex`, and Enter/Space key handling.
+- 6 customer pages rewritten: Login (split layout + animated blob),
+  Dashboard (greeting, plan card with glow, animated counters, recent cases),
+  NewCase (3-step wizard with floating labels and drag-drop file picker),
+  Cases (filter pills + status-bar cards, route `/cases`), CaseDetail
+  (two-column desktop, deadline countdown, evidence grid with lightbox,
+  sticky chat panel), Messages (list + thread with mobile slide).
+- `App.tsx` wraps customer routes in `AnimatePresence` + `PageTransition` +
+  `ToastProvider`, with `CustomerNav` (top) + `BottomNav` (mobile) layout.
+- `message:new` socket events are normalized defensively in CaseDetail and
+  Messages to handle both snake_case (`sender_discord_id`, `created_at`) and
+  camelCase (`senderDiscordId`, `timestamp`) shapes the server emits, and
+  filter out events for other cases by `case_id`/`caseId`.
+- Evidence uploads in NewCase are local-only previews — the backend has no
+  client-side upload endpoint, so the UI clearly tells users files will be
+  attached afterwards in their Discord case channel.
 
 ## Verification Status (last full audit)
 

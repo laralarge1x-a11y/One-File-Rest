@@ -1,0 +1,361 @@
+Here is your full prompt for Replit — copy and paste every word:
+
+---
+
+## REPLIT PROMPT — COMPLETE CUSTOMER PORTAL UI REDESIGN
+
+Read every word carefully. You are doing a complete visual and UX overhaul of the customer-facing portal. Every page must feel premium, smooth, and professional. It must work perfectly on mobile and desktop. No shortcuts, no half-measures.
+
+---
+
+### DESIGN SYSTEM — APPLY EVERYWHERE
+
+First create `client/src/styles/design-system.css` and import it in `main.tsx`. This is the foundation for everything:
+
+```css
+:root {
+  --bg-primary: #080808;
+  --bg-secondary: #111111;
+  --bg-card: #161616;
+  --bg-card-hover: #1c1c1c;
+  --bg-glass: rgba(255, 255, 255, 0.04);
+  --bg-glass-hover: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.15);
+  --accent: #5865F2;
+  --accent-light: #7289DA;
+  --accent-glow: rgba(88, 101, 242, 0.3);
+  --success: #57F287;
+  --warning: #FEE75C;
+  --danger: #ED4245;
+  --text-primary: #FFFFFF;
+  --text-secondary: rgba(255,255,255,0.6);
+  --text-muted: rgba(255,255,255,0.35);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --shadow-card: 0 4px 24px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 40px rgba(88,101,242,0.15);
+  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Smooth scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* Selection color */
+::selection { background: var(--accent-glow); color: white; }
+```
+
+Install `framer-motion` for all animations: `npm install framer-motion`
+
+---
+
+### GLOBAL COMPONENTS TO CREATE
+
+Create these shared components in `client/src/components/`:
+
+**1. `PageTransition.tsx`**
+Wraps every page. Uses framer-motion `AnimatePresence` with fade + slight upward slide:
+```
+initial: { opacity: 0, y: 16 }
+animate: { opacity: 1, y: 0 }
+exit: { opacity: 0, y: -8 }
+transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] }
+```
+
+**2. `GlassCard.tsx`**
+Reusable card component:
+- Background: `var(--bg-glass)`
+- Border: `1px solid var(--border)`
+- Border-radius: `var(--radius-lg)`
+- Backdrop-filter: `blur(12px)`
+- On hover: border becomes `var(--border-hover)`, slight scale `1.005`, smooth transition
+- Props: `children`, `className`, `onClick`, `glowing` (adds box-shadow glow)
+
+**3. `StatusBadge.tsx`**
+Animated status pill:
+- pending → yellow pulse dot + "Pending"
+- in_progress → blue spinning dot + "In Progress"
+- resolved → green static dot + "Resolved"
+- closed → grey dot + "Closed"
+- The dot animates with a CSS pulse keyframe
+
+**4. `LoadingSpinner.tsx`**
+Beautiful centered spinner — use a CSS conic-gradient rotating circle, accent color, with a subtle glow behind it
+
+**5. `EmptyState.tsx`**
+When a list is empty — show a large subtle icon, a heading, a subtext, and optionally an action button. Animate in with framer-motion.
+
+**6. `Toast.tsx`**
+Create a toast notification system (no external library). Toasts slide in from top-right on desktop, bottom on mobile. Types: success (green), error (red), info (blue). Auto-dismiss after 4 seconds. Stack multiple toasts.
+
+**7. `CustomerNav.tsx`**
+The top navigation bar for all customer pages:
+- Fixed top, full width
+- Background: `rgba(8,8,8,0.85)` with `backdrop-filter: blur(20px)`
+- Left: logo/brand mark "TikTok Recovery" with a small lightning bolt icon
+- Right: user Discord avatar (round, 32px) + username + dropdown menu on click (Dashboard, My Cases, Messages, Logout)
+- On mobile: hamburger menu that slides in a full-screen overlay nav with smooth animation
+- Border bottom: `1px solid var(--border)`
+- Height: 60px desktop, 56px mobile
+
+---
+
+### PAGE 1 — LOGIN PAGE (`/`)
+
+Complete redesign. Full screen split layout on desktop, stacked on mobile:
+
+**Left side (desktop only):**
+- Dark background with animated gradient blob in the background (CSS keyframe animation — soft purple/blue blobs slowly moving)
+- Large headline: "Recover Your TikTok Account" in white, bold, 48px
+- Subtext: "Expert appeal writing, case management, and 1-on-1 support — all in one place."
+- Three feature pills below: "✓ 48h Response Time", "✓ Expert Appeal Writers", "✓ Real-time Updates"
+- Testimonial card at bottom with a quote and fake name/handle, glass card style
+
+**Right side (both layouts):**
+- Centered vertically
+- Small label: "Welcome back" in muted text
+- Large heading: "Sign in to your Portal"
+- Subtext: "Use your Discord account to access your recovery dashboard"
+- Big Discord login button:
+  - Full width, height 52px, border-radius 12px
+  - Discord brand color `#5865F2` background
+  - Discord logo SVG on left
+  - Text: "Continue with Discord"
+  - On hover: slightly lighter, subtle glow, scale 1.02
+  - On click: loading spinner replaces content, button disabled
+- Below button: "New here? Access is by invitation only. Contact us on Discord."
+- Small footer: privacy notice
+
+**Mobile:** Full screen, centered, just the right side content with the animated blob behind it
+
+---
+
+### PAGE 2 — DASHBOARD (`/dashboard`)
+
+Complete redesign. Wrap in `PageTransition`.
+
+**Header section:**
+- "Good morning/afternoon/evening, {username}" — greeting based on time of day
+- Discord avatar large (48px) next to greeting
+- Subtitle: "Here's what's happening with your cases"
+
+**Plan card (most prominent element):**
+- Full width glass card with a glowing border in the plan's color
+- Basic Guard → blue glow
+- Fortnightly Defense → green glow
+- ProShield Creator → gold glow
+- Shows: plan name, price, expiry date, a progress bar showing days remaining vs total days
+- All plan features listed as checkmarks
+- Animated: slides in from bottom with framer-motion on page load
+
+**Stats row — 3 cards side by side (stack on mobile):**
+- Total Cases
+- Active Cases  
+- Resolved Cases
+- Each card: large number animates counting up from 0 when it enters viewport (use IntersectionObserver)
+- Icon, label, number, small trend text
+
+**Recent Cases section:**
+- Heading with "View All →" link
+- Last 3 cases as cards
+- Each case card: case ID badge, violation type, status badge (animated), created date, short description preview
+- On hover: card lifts with shadow
+- On click: navigate to case detail
+- Animate in with staggered framer-motion: each card delays by 0.1s
+
+**Quick Actions row:**
+- "Submit New Case" button — primary accent color, full width on mobile
+- "Message Staff" button — outlined style
+- Both with icons, smooth hover effects
+
+**No cases empty state:**
+- Beautiful illustration (SVG inline), encouraging text, big "Submit Your First Case" button
+
+---
+
+### PAGE 3 — NEW CASE (`/cases/new`)
+
+Complete redesign. Multi-step form with smooth step transitions.
+
+**Step indicator at top:**
+- 3 steps: "Case Details" → "Evidence" → "Review"
+- Active step highlighted with accent color
+- Completed steps show checkmark
+- Progress line between steps fills in as you advance
+- Smooth animated transition between steps
+
+**Step 1 — Case Details:**
+- Floating label inputs (label starts inside input, floats up when focused/filled)
+- Fields: Violation Type (custom styled select dropdown with icons for each type), Platform (TikTok / TikTok Shop toggle), Description (auto-resizing textarea), Date of Violation (date picker styled to match theme)
+- Each field animates in with stagger
+- Real-time character count on description (max 1000)
+- Inline validation — red border + error message appears smoothly if field invalid
+
+**Step 2 — Evidence:**
+- Large drag-and-drop zone with dashed animated border
+- "Drag files here or click to browse"
+- On drag-over: border glows accent color, background lightens
+- Accepted: images, PDFs, documents
+- Uploaded files show as thumbnail cards with filename, size, remove button
+- Upload progress bar per file (fake progress or real if API supports it)
+- Max 10 files indicator
+
+**Step 3 — Review:**
+- Summary of everything entered
+- Each section in a glass card
+- "Edit" links back to each step
+- Big "Submit Case" button
+- On submit: button shows loading state, then success animation (checkmark draws itself with SVG stroke animation), then redirect to case detail
+
+---
+
+### PAGE 4 — CASE DETAIL (`/cases/:id`)
+
+Complete redesign.
+
+**Top section:**
+- Back button "← My Cases"
+- Case ID badge + Status badge side by side
+- Case title (violation type) large
+- Created date + deadline with countdown timer ("2 days 14 hours remaining" — updates every second using setInterval, turns red under 24 hours)
+
+**Two column layout on desktop, single column on mobile:**
+
+LEFT COLUMN — Case Info:
+- Glass card: violation details, description, platform
+- Glass card: Evidence files — image files show thumbnails in a grid, click to open lightbox overlay. Other files show icon + filename + download link
+- Glass card: Timeline — vertical line with dots, each event (created, status changed, message sent) shown chronologically with icon and time
+
+RIGHT COLUMN — Messages:
+- Sticky on desktop
+- Messages thread — chat style:
+  - Client messages: right-aligned, accent color background, rounded `16px 16px 4px 16px`
+  - Staff messages: left-aligned, dark card background, rounded `16px 16px 16px 4px`
+  - Each message: avatar, name, message text, timestamp (show full time on hover)
+  - Smooth scroll to bottom on new message
+  - If no messages: empty state with "Send your first message below"
+- Message input at bottom:
+  - Textarea that auto-resizes (max 120px height)
+  - Send button to the right — paper plane icon
+  - On focus: border glows accent color
+  - Shift+Enter for new line, Enter to send
+  - Character count
+  - Loading state on send
+  - New message animates in from bottom with framer-motion
+
+**Mobile:** Full single column, messages section below case info
+
+---
+
+### PAGE 5 — ALL CASES (`/cases`)
+
+**Filter bar:**
+- Pill-style filter buttons: All / Pending / In Progress / Resolved
+- Active filter: filled accent background
+- Smooth transition when switching — filtered list animates
+
+**Cases list:**
+- Each case as a full-width card
+- Left: colored status bar (like a bookmark) indicating status color
+- Case ID, violation type, status badge, created date
+- Short description preview (2 lines, truncated)
+- Right: arrow icon
+- On hover: card slides right 4px, shadow deepens
+- Click: navigate to case detail
+- Animate in with staggered list animation
+
+**Empty state per filter** — different messages for each status filter
+
+---
+
+### PAGE 6 — MESSAGES (`/messages`)
+
+**Conversation list (left on desktop, full screen on mobile):**
+- Each conversation = one case
+- Shows: case ID, last message preview, timestamp, unread dot if unread
+- Active conversation highlighted
+- Search bar at top to filter
+
+**Message thread (right on desktop, opens as new screen on mobile):**
+- Same chat style as case detail messages
+- Back button on mobile
+
+**Mobile behavior:**
+- List view by default
+- Clicking a conversation slides the thread in from the right (CSS transform transition)
+- Back button slides back to list
+
+---
+
+### MOBILE-SPECIFIC RULES — APPLY TO ALL PAGES
+
+1. All tap targets minimum 44px height
+2. No horizontal scroll anywhere
+3. Bottom navigation bar on mobile (fixed bottom) with 4 icons: Home, Cases, Messages, Profile — active icon highlighted with accent color and a small dot
+4. Smooth bounce animation when switching bottom nav tabs
+5. All modals on mobile are bottom sheets (slide up from bottom, with drag handle at top)
+6. Forms on mobile: inputs are full width, font-size minimum 16px (prevents iOS zoom on focus)
+7. Swipe left on a case card to reveal quick actions (delete draft, view)
+8. Pull-to-refresh gesture on lists (show a spinning indicator at top)
+
+---
+
+### ANIMATIONS — APPLY EVERYWHERE
+
+Use framer-motion for all of these:
+
+1. **Page transitions** — every route change has fade + slide, wrapped in AnimatePresence in App.tsx
+2. **List stagger** — when a list of items loads, each item animates in 0.08s after the previous
+3. **Number count-up** — stat numbers animate from 0 to their value over 1 second when they enter the viewport
+4. **Skeleton loading** — every data-fetching section shows animated skeleton screens (CSS shimmer animation) while loading, never a blank white flash
+5. **Button feedback** — all buttons scale to 0.97 on click (active state)
+6. **Card hover** — all cards lift 2px and shadow deepens on hover, smooth 200ms transition
+7. **Form field focus** — border color transitions to accent, label floats up, subtle glow appears
+8. **Success states** — checkmark SVG draws itself using stroke-dashoffset animation
+9. **Error shake** — when form validation fails, input shakes horizontally (CSS keyframe)
+10. **Modal/sheet open** — backdrop fades in, modal slides up or scales in
+
+---
+
+### PERFORMANCE RULES
+
+1. All images use `loading="lazy"`
+2. Use `React.memo` on all list item components
+3. Use `useCallback` on all event handlers in list components
+4. Socket.io updates must use optimistic UI — when user sends a message, show it immediately before server confirms
+5. All API calls use loading, error, and success states — never leave the user staring at a blank screen
+6. Debounce search inputs by 300ms
+
+---
+
+### FINAL CHECKS AFTER IMPLEMENTATION
+
+1. Test on mobile viewport 375px width — nothing should overflow
+2. Test on desktop 1440px — layout should use space well
+3. Test all page transitions — every route change must animate
+4. Test dark mode consistency — no white backgrounds anywhere
+5. Test all loading states — disconnect from API and confirm skeletons show
+6. Test empty states — clear DB data and confirm empty states show correctly
+7. Confirm bottom nav appears only on mobile (below 768px)
+8. Confirm CustomerNav appears on all customer pages
+9. Confirm AdminSidebar and CustomerNav never appear on each other's pages
+
+After all implementation, restart the server, take screenshots of Dashboard, New Case form, and Case Detail on both mobile and desktop viewports, and confirm everything renders correctly with zero console errors.

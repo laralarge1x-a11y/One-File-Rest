@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion, useInView, useMotionValue, useTransform, animate } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import { useSocket } from '../hooks/useSocket';
+import { GlassCard, StatusBadge, LoadingSpinner, EmptyState } from '../components/customer';
 
 interface Case {
   id: number;
@@ -11,246 +13,239 @@ interface Case {
   priority: string;
   appeal_deadline: string;
   created_at: string;
+  outcome?: string;
+  violation_description?: string;
+}
+
+const PLAN_THEMES: Record<string, { glow: string; label: string; price: string }> = {
+  basic_guard:        { glow: 'rgba(88,101,242,0.30)', label: 'Basic Guard',         price: '$29/mo' },
+  fortnightly_defense:{ glow: 'rgba(87,242,135,0.30)', label: 'Fortnightly Defense', price: '$59/mo' },
+  proshield_creator:  { glow: 'rgba(254,231,92,0.30)', label: 'ProShield Creator',   price: '$129/mo' },
+  free:               { glow: 'rgba(255,255,255,0.10)', label: 'Free',               price: '—' },
+};
+
+function CountUp({ value }: { value: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const inView = useInView(ref, { once: true, margin: '-40px' });
+  const mv = useMotionValue(0);
+  const display = useTransform(mv, (n) => Math.round(n).toLocaleString());
+  useEffect(() => { if (inView) animate(mv, value, { duration: 1.0, ease: [0.4, 0, 0.2, 1] }); }, [inView, value]);
+  return <motion.span ref={ref}>{display}</motion.span>;
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
 }
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const { socket, isConnected } = useSocket();
+  const { socket } = useSocket();
   const navigate = useNavigate();
   const [cases, setCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({
-    totalCases: 0,
-    activeCases: 0,
-    wonCases: 0,
-    complianceScore: 0,
-  });
 
+  useEffect(() => { fetchCases(); }, []);
   useEffect(() => {
-    fetchCases();
-  }, []);
-
-  useEffect(() => {
-    if (socket) {
-      socket.on('case:status_changed', (data) => {
-        setCases((prev) =>
-          prev.map((c) => (c.id === data.caseId ? { ...c, status: data.newStatus } : c))
-        );
-      });
-
-      return () => {
-        socket.off('case:status_changed');
-      };
-    }
+    if (!socket) return;
+    const handler = (data: any) => setCases((prev) => prev.map((c) => c.id === data.caseId ? { ...c, status: data.newStatus } : c));
+    socket.on('case:status_changed', handler);
+    return () => { socket.off('case:status_changed', handler); };
   }, [socket]);
 
   const fetchCases = async () => {
     try {
-      const response = await fetch('/api/cases', {
-        credentials: 'include',
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setCases(data);
-
-        const closedStatuses = ['won', 'denied', 'closed'];
-        setStats({
-          totalCases: data.length,
-          activeCases: data.filter((c: Case) => !closedStatuses.includes(c.status)).length,
-          wonCases: data.filter((c: Case) => c.outcome === 'won' || c.status === 'won').length,
-          complianceScore: 85,
-        });
-      }
-    } catch (err) {
-      console.error('Error fetching cases:', err);
-    } finally {
-      setLoading(false);
-    }
+      const r = await fetch('/api/cases', { credentials: 'include' });
+      if (r.ok) setCases(await r.json());
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'open':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'won':
-        return 'bg-green-100 text-green-800';
-      case 'denied':
-        return 'bg-red-100 text-red-800';
-      case 'closed':
-        return 'bg-gray-100 text-gray-800';
-      default:
-        return 'bg-blue-100 text-blue-800';
-    }
-  };
+  if (loading) return <LoadingSpinner fullScreen label="Loading your dashboard..." />;
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'critical':
-        return 'text-red-500';
-      case 'high':
-        return 'text-orange-500';
-      case 'normal':
-        return 'text-blue-500';
-      default:
-        return 'text-gray-500';
-    }
-  };
+  const closed = ['won', 'denied', 'closed', 'resolved'];
+  const total = cases.length;
+  const active = cases.filter((c) => !closed.includes(c.status?.toLowerCase())).length;
+  const resolved = cases.filter((c) => ['won', 'resolved'].includes(c.status?.toLowerCase())).length;
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading your cases...</p>
-        </div>
-      </div>
-    );
+  const planKey = ((user as any)?.plan || 'free') as string;
+  const planTheme = PLAN_THEMES[planKey] || PLAN_THEMES.free;
+  const planExpires = (user as any)?.plan_expires_at as string | undefined;
+  let daysRemaining: number | null = null;
+  let totalDays = 30;
+  if (planExpires) {
+    const ms = new Date(planExpires).getTime() - Date.now();
+    daysRemaining = Math.max(0, Math.round(ms / (1000 * 60 * 60 * 24)));
+    if (planKey === 'proshield_creator') totalDays = 30;
+    else if (planKey === 'fortnightly_defense') totalDays = 14;
+    else totalDays = 30;
   }
+  const planFeatures = planKey === 'proshield_creator'
+    ? ['Priority appeal writing', '24h response SLA', 'Unlimited cases', 'Direct strategist access']
+    : planKey === 'fortnightly_defense'
+      ? ['2 expert appeals / month', '48h response SLA', 'Case prioritization']
+      : planKey === 'basic_guard'
+        ? ['1 expert appeal / month', '72h response SLA', 'Standard support']
+        : ['Limited features', 'Upgrade to access expert appeals'];
+
+  const recent = cases.slice(0, 3);
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Welcome back, {user?.discord_username}</h1>
-        <p className="text-gray-600 mt-2">Manage your TikTok appeals and track your compliance score</p>
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-gray-600 text-sm font-medium">Total Cases</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">{stats.totalCases}</p>
+    <div className="page-wrap">
+      <motion.div
+        initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}
+        style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28 }}
+      >
+        {(user as any)?.avatar_url
+          ? <img src={(user as any).avatar_url} alt="" style={{ width: 48, height: 48, borderRadius: '50%', border: '1px solid var(--border)' }} />
+          : <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 18 }}>
+              {(user?.discord_username || '?').charAt(0).toUpperCase()}
             </div>
-            <div className="bg-blue-100 rounded-full p-3">
-              <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </div>
-          </div>
+        }
+        <div>
+          <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: -0.5 }}>
+            {greeting()}, {user?.discord_username}
+          </h1>
+          <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: 14 }}>
+            Here's what's happening with your cases.
+          </p>
         </div>
+      </motion.div>
 
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.1 }}
+        style={{ marginBottom: 28 }}
+      >
+        <GlassCard glowing glowColor={planTheme.glow} noHover style={{ padding: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
             <div>
-              <p className="text-gray-600 text-sm font-medium">Active Cases</p>
-              <p className="text-3xl font-bold text-yellow-600 mt-2">{stats.activeCases}</p>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600 }}>Current Plan</div>
+              <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6 }}>{planTheme.label}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>{planTheme.price}</div>
             </div>
-            <div className="bg-yellow-100 rounded-full p-3">
-              <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
+            {daysRemaining !== null && (
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600 }}>Renews in</div>
+                <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6, color: daysRemaining < 5 ? 'var(--danger)' : 'var(--text-primary)' }}>
+                  {daysRemaining}d
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-gray-600 text-sm font-medium">Won Cases</p>
-              <p className="text-3xl font-bold text-green-600 mt-2">{stats.wonCases}</p>
+          {daysRemaining !== null && (
+            <div style={{ marginTop: 16, height: 6, borderRadius: 999, background: 'var(--bg-glass)', overflow: 'hidden' }}>
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${Math.min(100, ((totalDays - daysRemaining) / totalDays) * 100)}%` }}
+                transition={{ duration: 1, delay: 0.4 }}
+                style={{ height: '100%', background: 'linear-gradient(90deg, var(--accent), var(--accent-light))', borderRadius: 999 }}
+              />
             </div>
-            <div className="bg-green-100 rounded-full p-3">
-              <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
+          )}
+          <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
+            {planFeatures.map((f) => (
+              <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+                <span style={{ color: 'var(--success)', fontSize: 14 }}>✓</span>{f}
+              </div>
+            ))}
           </div>
-        </div>
+        </GlassCard>
+      </motion.div>
 
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-gray-600 text-sm font-medium">Compliance Score</p>
-              <p className="text-3xl font-bold text-purple-600 mt-2">{stats.complianceScore}%</p>
-            </div>
-            <div className="bg-purple-100 rounded-full p-3">
-              <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Cases Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-gray-900">Your Cases</h2>
-          <button
-            onClick={() => navigate('/cases/new')}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition"
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 28 }}>
+        {[
+          { label: 'Total Cases',   value: total,    color: '#5865F2', icon: '📋' },
+          { label: 'Active Cases',  value: active,   color: '#FEE75C', icon: '⚡' },
+          { label: 'Resolved Cases', value: resolved, color: '#57F287', icon: '✓' },
+        ].map((s, i) => (
+          <motion.div
+            key={s.label}
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.2 + i * 0.08 }}
           >
-            + New Case
-          </button>
-        </div>
-
-        {cases.length === 0 ? (
-          <div className="p-8 text-center">
-            <p className="text-gray-600 mb-4">No cases yet. Create your first case to get started.</p>
-            <button
-              onClick={() => navigate('/cases/new')}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg transition"
-            >
-              Create First Case
-            </button>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Account</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Violation</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Priority</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Deadline</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {cases.map((caseItem) => (
-                  <tr key={caseItem.id} className="hover:bg-gray-50 transition">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{caseItem.account_username}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{caseItem.violation_type}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(caseItem.status)}`}>
-                        {caseItem.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`text-sm font-semibold ${getPriorityColor(caseItem.priority)}`}>
-                        {caseItem.priority}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {caseItem.appeal_deadline ? new Date(caseItem.appeal_deadline).toLocaleDateString() : 'N/A'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <button
-                        onClick={() => navigate(`/cases/${caseItem.id}`)}
-                        className="text-blue-600 hover:text-blue-900 font-semibold"
-                      >
-                        View
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+            <GlassCard style={{ padding: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.6 }}>{s.label}</span>
+                <span style={{
+                  width: 30, height: 30, borderRadius: 8,
+                  background: `${s.color}15`, color: s.color,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
+                }}>{s.icon}</span>
+              </div>
+              <div style={{ fontSize: 32, fontWeight: 800, color: s.color, lineHeight: 1 }}>
+                <CountUp value={s.value} />
+              </div>
+            </GlassCard>
+          </motion.div>
+        ))}
       </div>
 
-      {/* Connection Status */}
-      <div className="mt-8 text-sm text-gray-600">
-        <p>
-          Socket Status: <span className={isConnected ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
-            {isConnected ? '✓ Connected' : '✗ Disconnected'}
-          </span>
-        </p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Recent Cases</h2>
+        <button onClick={() => navigate('/cases')} style={{
+          fontSize: 13, fontWeight: 600, color: 'var(--accent)',
+          padding: '6px 10px', borderRadius: 8, transition: 'var(--transition)',
+        }}>View All →</button>
+      </div>
+
+      {recent.length === 0 ? (
+        <GlassCard noHover style={{ padding: 8 }}>
+          <EmptyState
+            icon="📭"
+            title="No cases yet"
+            subtitle="Submit your first case and our team will start your appeal recovery process."
+            actionLabel="Submit Your First Case"
+            onAction={() => navigate('/cases/new')}
+          />
+        </GlassCard>
+      ) : (
+        <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+        >
+          {recent.map((c) => (
+            <motion.div key={c.id} variants={{ hidden: { opacity: 0, y: 14 }, show: { opacity: 1, y: 0 } }}>
+              <GlassCard onClick={() => navigate(`/cases/${c.id}`)} style={{ padding: 18 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                        background: 'var(--bg-glass)', border: '1px solid var(--border)',
+                        borderRadius: 6, color: 'var(--text-muted)', fontFamily: 'monospace',
+                      }}>#{c.id}</span>
+                      <StatusBadge status={c.status} size="sm" />
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+                      {c.violation_type || 'Untitled case'} · <span style={{ color: 'var(--text-muted)' }}>@{c.account_username}</span>
+                    </div>
+                    {c.violation_description && (
+                      <div style={{
+                        fontSize: 13, color: 'var(--text-secondary)',
+                        display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                      }}>{c.violation_description}</div>
+                    )}
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                      Created {new Date(c.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 18 }}>→</span>
+                </div>
+              </GlassCard>
+            </motion.div>
+          ))}
+        </motion.div>
+      )}
+
+      <div style={{ marginTop: 28, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <button onClick={() => navigate('/cases/new')} className="btn-primary" style={{ flex: '1 1 200px', minHeight: 48 }}>
+          <span>＋</span> Submit New Case
+        </button>
+        <button onClick={() => navigate('/messages')} className="btn-ghost" style={{ flex: '1 1 200px', minHeight: 48 }}>
+          <span>💬</span> Message Staff
+        </button>
       </div>
     </div>
   );
