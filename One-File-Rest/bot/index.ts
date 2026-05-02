@@ -12,6 +12,10 @@ import {
   Message,
   WebhookClient,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ButtonInteraction,
 } from 'discord.js';
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -250,36 +254,80 @@ async function handleGiveAccess(interaction: ChatInputCommandInteraction) {
     // Refresh channel map
     channelUserMap.set(channelId, targetUser.id);
 
-    // Step 5 — Send welcome embed in the current channel
+    // Step 5 — Send polished welcome embed + action buttons in the channel
+    const fmtDate = (d: string) =>
+      new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    const renewalLine = autoRenew
+      ? `🔄 Auto-renews **${fmtDate(endDate)}**`
+      : `📅 Active until **${fmtDate(endDate)}**`;
+
     const welcomeEmbed = new EmbedBuilder()
       .setColor(planMeta.color)
-      .setTitle(`✅ Welcome to TikTok Recovery Portal, ${targetUser.username}!`)
-      .setDescription('Your access has been granted. Here is everything you need to know.')
+      .setAuthor({ name: 'Elite Tok Club  •  Membership Activated' })
+      .setTitle(`Welcome, ${targetUser.username} 👋`)
+      .setDescription(
+        `You're now on the **${planMeta.name}** — ${planMeta.price}.\n` +
+        `${renewalLine}\n\u200b`
+      )
       .addFields(
-        { name: '📦 Your Plan', value: planMeta.name, inline: true },
-        { name: '💰 Price', value: planMeta.price, inline: true },
-        { name: '📅 Active From', value: new Date(startDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), inline: true },
         {
-          name: autoRenew ? '🔄 Next Renewal' : '📅 Active Until',
-          value: autoRenew
-            ? `${new Date(endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}\n_Auto-renews via payment gateway_`
-            : new Date(endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+          name: '⚡  Response Time',
+          value: planMeta.response,
           inline: true,
         },
-        { name: '⚡ Response Time', value: planMeta.response, inline: true },
-        { name: '🎯 Violations Covered', value: planMeta.violations, inline: true },
-        { name: '✨ Your Benefits', value: planMeta.features.map((f) => `• ${f}`).join('\n'), inline: false },
-        { name: '🌐 Portal Access', value: `Login with Discord at: ${PORTAL_URL}`, inline: false },
         {
-          name: '📋 How to Use',
-          value: '1. Click the portal link above\n2. Login with your Discord account (one time only, you stay logged in)\n3. Submit your cases and track progress\n4. All updates appear here in this channel automatically',
+          name: '🎯  Coverage',
+          value: planMeta.violations,
+          inline: true,
+        },
+        {
+          name: '📅  Started',
+          value: fmtDate(startDate),
+          inline: true,
+        },
+        {
+          name: '✨  What\'s included',
+          value: planMeta.features.map((f) => `›  ${f}`).join('\n'),
+          inline: false,
+        },
+        {
+          name: '\u200b',
+          value:
+            '**Getting started**\n' +
+            '`1` Open the portal below and sign in with Discord\n' +
+            '`2` Submit your case in a guided step-by-step flow\n' +
+            '`3` Track progress live — every update mirrors here automatically',
           inline: false,
         },
       )
-      .setFooter({ text: `TikTok Recovery Portal • Access granted by ${interaction.user.username}` })
+      .setFooter({ text: `Granted by ${interaction.user.username}  •  Elite Tok Club Portal` })
       .setTimestamp();
 
-    await channel.send({ embeds: [welcomeEmbed] });
+    const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setLabel('Open Portal')
+        .setStyle(ButtonStyle.Link)
+        .setEmoji('🌐')
+        .setURL(PORTAL_URL),
+      new ButtonBuilder()
+        .setCustomId(`etc:newcase:${targetUser.id}`)
+        .setLabel('Submit New Case')
+        .setEmoji('📝')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`etc:mycases:${targetUser.id}`)
+        .setLabel('My Cases')
+        .setEmoji('📋')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`etc:help:${targetUser.id}`)
+        .setLabel('Help')
+        .setEmoji('💬')
+        .setStyle(ButtonStyle.Secondary),
+    );
+
+    await channel.send({ embeds: [welcomeEmbed], components: [actionRow] });
 
     // Step 6 — Ephemeral reply to admin
     await interaction.editReply({
@@ -399,22 +447,127 @@ client.once(Events.ClientReady, async (readyClient) => {
   setInterval(refreshChannelMap, 5 * 60 * 1000);
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+// ─── Customer button handlers (Submit New Case / My Cases / Help) ─────────
+async function handleCustomerButton(interaction: ButtonInteraction) {
+  const [, action, ownerId] = interaction.customId.split(':');
 
+  // Only the user the buttons were created for can use them
+  if (ownerId && interaction.user.id !== ownerId) {
+    await interaction.reply({
+      content: '🔒 These buttons belong to another user. Use `/giveaccess` to get your own welcome panel, or open the portal directly: ' + PORTAL_URL,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (action === 'newcase') {
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('📝  Submit a new case')
+      .setDescription(
+        `Open the portal and you'll be guided through a clean step-by-step form:\n` +
+        `›  Violations on the account\n` +
+        `›  Screenshots of the violation\n` +
+        `›  Purchase & verification details\n` +
+        `›  Previous appeals (if any)\n` +
+        `›  Account metrics (GMV, frozen commission, etc.)\n\n` +
+        `Everything autosaves — you can stop and resume anytime.`,
+      )
+      .setFooter({ text: 'Elite Tok Club Portal' });
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setLabel('Open Submission Form').setStyle(ButtonStyle.Link).setEmoji('🚀').setURL(`${PORTAL_URL}/cases/new`),
+    );
+    await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+    return;
+  }
+
+  if (action === 'mycases') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const cases = await callBridge<any[]>('GET', `/bot/cases?discord_id=${interaction.user.id}`);
+      if (!cases || cases.length === 0) {
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setLabel('Submit Your First Case').setStyle(ButtonStyle.Link).setEmoji('📝').setURL(`${PORTAL_URL}/cases/new`),
+        );
+        await interaction.editReply({
+          content: '📋  You don\'t have any cases yet.',
+          components: [row],
+        });
+        return;
+      }
+      const statusEmoji: Record<string, string> = {
+        pending: '⏳', intake: '📥', profile_built: '🏗️', appeal_drafted: '✍️',
+        appeal_submitted: '📤', awaiting_tiktok: '⌛', response_received: '📩',
+        won: '✅', denied: '❌', escalated: '🚨', closed: '🔒',
+      };
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`📋  Your cases  •  ${cases.length} total`)
+        .setDescription(
+          cases.slice(0, 8).map((c) => {
+            const emoji = statusEmoji[c.status] || '📁';
+            const acct = c.account_username ? `@${c.account_username}` : 'Account pending';
+            return `${emoji}  **Case #${c.id}** — ${c.violation_type || 'Violation'}\n` +
+                   `\u2002\u2002${acct}  •  \`${c.status}\`  •  ${new Date(c.created_at).toLocaleDateString()}`;
+          }).join('\n\n'),
+        )
+        .setFooter({ text: 'Elite Tok Club Portal' });
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setLabel('View All in Portal').setStyle(ButtonStyle.Link).setEmoji('🌐').setURL(`${PORTAL_URL}/cases`),
+      );
+      await interaction.editReply({ embeds: [embed], components: [row] });
+    } catch (err) {
+      console.error('[Bot] mycases button error:', err);
+      await interaction.editReply({ content: '❌ Could not load your cases right now. Please try again in a moment.' });
+    }
+    return;
+  }
+
+  if (action === 'help') {
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('💬  We\'re here to help')
+      .setDescription(
+        `**The fastest way to reach us:**\n` +
+        `Just send a message in this channel — your assigned specialist sees it instantly and replies here and inside the portal.\n\n` +
+        `**Common questions**\n` +
+        `›  *How long until you reply?* — depends on your plan (12h–72h)\n` +
+        `›  *How do I add a screenshot?* — drop it as an attachment in this channel, or upload inside your case in the portal\n` +
+        `›  *Can I check my case status?* — tap **My Cases** above, or open the portal anytime`,
+      )
+      .setFooter({ text: 'Elite Tok Club Portal  •  Reply here to chat with your specialist' });
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
+  }
+
+  await interaction.reply({ content: 'Unknown action.', ephemeral: true });
+}
+
+client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    switch (interaction.commandName) {
-      case 'giveaccess': await handleGiveAccess(interaction); break;
-      case 'revokeaccess': await handleRevokeAccess(interaction); break;
-      case 'casestatus': await handleCaseStatus(interaction); break;
+    if (interaction.isChatInputCommand()) {
+      switch (interaction.commandName) {
+        case 'giveaccess': await handleGiveAccess(interaction); break;
+        case 'revokeaccess': await handleRevokeAccess(interaction); break;
+        case 'casestatus': await handleCaseStatus(interaction); break;
+      }
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('etc:')) {
+      await handleCustomerButton(interaction);
+      return;
     }
   } catch (err) {
-    console.error('[Bot] Unhandled command error:', err);
-    const errMsg = { content: '❌ An unexpected error occurred.', ephemeral: true };
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(errMsg).catch(console.error);
-    } else {
-      await interaction.reply(errMsg).catch(console.error);
+    console.error('[Bot] Unhandled interaction error:', err);
+    if (interaction.isRepliable()) {
+      const errMsg = { content: '❌ An unexpected error occurred.', ephemeral: true };
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(errMsg).catch(console.error);
+      } else {
+        await interaction.reply(errMsg).catch(console.error);
+      }
     }
   }
 });
