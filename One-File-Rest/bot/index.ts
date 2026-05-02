@@ -28,6 +28,7 @@ if (!TOKEN) {
 const PLANS: Record<string, {
   name: string; price: string; color: number;
   response: string; violations: string; features: string[];
+  durationDays: number;
 }> = {
   basic_guard: {
     name: 'Basic Guard Plan',
@@ -35,6 +36,7 @@ const PLANS: Record<string, {
     color: 0x5865F2,
     response: '48–72 hours',
     violations: '1 violation/month',
+    durationDays: 30,
     features: [
       '1 violation handled per month',
       '48–72 hour response time',
@@ -51,6 +53,7 @@ const PLANS: Record<string, {
     color: 0x57F287,
     response: 'Under 12 hours',
     violations: 'Up to 3 violations per 2 weeks',
+    durationDays: 14,
     features: [
       'Up to 3 violations per 2 weeks',
       'Priority response under 12 hours',
@@ -68,6 +71,7 @@ const PLANS: Record<string, {
     color: 0xFFD700,
     response: 'Priority — fastest queue',
     violations: 'Up to 5 violations/month',
+    durationDays: 30,
     features: [
       'Up to 5 violations/month',
       'Priority handling — top queue',
@@ -144,7 +148,7 @@ const commands = [
         )
     )
     .addStringOption((opt) => opt.setName('start_date').setDescription('Start date (YYYY-MM-DD)').setRequired(true))
-    .addStringOption((opt) => opt.setName('end_date').setDescription('End date (YYYY-MM-DD)').setRequired(true))
+    .addStringOption((opt) => opt.setName('end_date').setDescription('Optional — auto-renews via payment gateway if omitted (YYYY-MM-DD)').setRequired(false))
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -183,11 +187,26 @@ async function handleGiveAccess(interaction: ChatInputCommandInteraction) {
   const targetUser = interaction.options.getUser('user', true);
   const plan = interaction.options.getString('plan', true);
   const startDate = interaction.options.getString('start_date', true);
-  const endDate = interaction.options.getString('end_date', true);
+  const endDateInput = interaction.options.getString('end_date', false);
   const planMeta = PLANS[plan];
   if (!planMeta) {
     await interaction.reply({ content: '❌ Invalid plan selected.', ephemeral: true });
     return;
+  }
+
+  // If no end_date provided, auto-compute next billing date from plan duration.
+  // Subscription auto-renews via the payment gateway, so this is just the next renewal anchor.
+  const autoRenew = !endDateInput;
+  let endDate = endDateInput || '';
+  if (autoRenew) {
+    const start = new Date(startDate);
+    if (isNaN(start.getTime())) {
+      await interaction.reply({ content: '❌ Invalid start_date format. Use YYYY-MM-DD.', ephemeral: true });
+      return;
+    }
+    const next = new Date(start);
+    next.setUTCDate(next.getUTCDate() + planMeta.durationDays);
+    endDate = next.toISOString().slice(0, 10);
   }
 
   await interaction.deferReply({ ephemeral: true });
@@ -240,7 +259,13 @@ async function handleGiveAccess(interaction: ChatInputCommandInteraction) {
         { name: '📦 Your Plan', value: planMeta.name, inline: true },
         { name: '💰 Price', value: planMeta.price, inline: true },
         { name: '📅 Active From', value: new Date(startDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), inline: true },
-        { name: '📅 Active Until', value: new Date(endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), inline: true },
+        {
+          name: autoRenew ? '🔄 Next Renewal' : '📅 Active Until',
+          value: autoRenew
+            ? `${new Date(endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}\n_Auto-renews via payment gateway_`
+            : new Date(endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+          inline: true,
+        },
         { name: '⚡ Response Time', value: planMeta.response, inline: true },
         { name: '🎯 Violations Covered', value: planMeta.violations, inline: true },
         { name: '✨ Your Benefits', value: planMeta.features.map((f) => `• ${f}`).join('\n'), inline: false },
