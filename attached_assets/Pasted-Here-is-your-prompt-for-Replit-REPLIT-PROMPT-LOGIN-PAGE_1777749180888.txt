@@ -1,0 +1,141 @@
+Here is your prompt for Replit:
+
+---
+
+## REPLIT PROMPT — LOGIN PAGE REDESIGN
+
+I have uploaded the logo file with this message. Find it in the uploads and use it as the logo everywhere on this page.
+
+---
+
+### WHAT TO BUILD
+
+One single beautiful login page. Works perfectly on both mobile and desktop. Clean, premium, minimal. No clutter.
+
+---
+
+### THE WHOLE PAGE — ONE DESIGN FOR BOTH MOBILE AND DESKTOP
+
+Not a split layout. One centered design that looks incredible at every screen size.
+
+**Background:**
+- Base color: `#07070F`
+- Three soft glowing orbs using CSS — blurred circles with `filter: blur(100px)`, positioned absolutely, animating slowly with `@keyframes float` (drifting up and down ±20px over 10 seconds infinite alternate)
+- Orb 1: accent purple `rgba(88,101,242,0.2)` — top left area
+- Orb 2: deeper blue `rgba(88,101,242,0.12)` — bottom right
+- Orb 3: tiny `rgba(114,137,218,0.1)` — center slightly offset
+- Very faint dot grid overlay on top: `radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)` with `background-size: 28px 28px`
+- Nothing else in the background — keep it clean
+
+**Center card — the main container:**
+- Centered horizontally and vertically on the page
+- Width: 420px on desktop, `calc(100% - 40px)` on mobile
+- Background: `rgba(255,255,255,0.04)`
+- Border: `1px solid rgba(255,255,255,0.09)`
+- Border-radius: 24px
+- Padding: 48px on desktop, 36px on mobile
+- Box-shadow: `0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)`
+- Backdrop-filter: `blur(20px)`
+
+**Inside the card — top to bottom:**
+
+1. **Logo** — the uploaded logo image, centered, height 52px desktop / 44px mobile, `object-fit: contain`
+
+2. **Gap:** 28px
+
+3. **Headline:** `Sign in to your Portal` — font Inter, 26px desktop / 22px mobile, font-weight 700, white, centered, letter-spacing -0.3px
+
+4. **Subtext:** `Access your TikTok recovery dashboard` — 14px, `rgba(255,255,255,0.45)`, centered, margin-top 6px
+
+5. **Gap:** 32px
+
+6. **Discord button:**
+   - Full width of card
+   - Height: 54px
+   - Background: `#5865F2`
+   - Border-radius: 14px
+   - Display flex centered, gap 12px
+   - Discord SVG logo white 22px on left
+   - Text: `Continue with Discord` — 15px, font-weight 600, white
+   - Box-shadow: `0 4px 20px rgba(88,101,242,0.45)`
+   - Hover: `background #4752C4`, shadow stronger `0 8px 30px rgba(88,101,242,0.6)`, `transform: translateY(-1px)`, transition 200ms ease
+   - Active: `transform: scale(0.985) translateY(0)`
+   - When clicked: replace button content with a small white CSS spinner, disable the button
+
+7. **Gap:** 20px
+
+8. **Divider:** thin `1px solid rgba(255,255,255,0.07)` full width
+
+9. **Gap:** 20px
+
+10. **Three feature pills** — centered, displayed as flex wrap justify-center, gap 8px:
+    - Each pill: `rgba(255,255,255,0.05)` background, `1px solid rgba(255,255,255,0.1)` border, border-radius 100px, padding `8px 14px`, font-size 12px, `rgba(255,255,255,0.6)` text
+    - `⚡ 48h Response Time`
+    - `✍️ Expert Appeal Writers`
+    - `🔔 Real-time Updates`
+
+11. **Gap:** 20px
+
+12. **Bottom text:** two lines, centered, font-size 12px, `rgba(255,255,255,0.3)`:
+    - `Access is by invitation only · Contact us on Discord`
+    - `By continuing you agree to our Terms & Privacy Policy`
+
+---
+
+### LOAD ANIMATION
+
+Every element inside the card animates in on page load using CSS only:
+
+```css
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+```
+
+Apply `animation: fadeUp 0.5s ease forwards` to each element with staggered `animation-delay`:
+- Logo: 0s
+- Headline: 0.08s
+- Subtext: 0.12s
+- Button: 0.18s
+- Divider: 0.22s
+- Pills: 0.26s
+- Bottom text: 0.3s
+
+All elements start `opacity: 0`.
+
+The card itself also fades in: `animation: fadeUp 0.4s ease forwards`
+
+---
+
+### FONT
+
+Add Inter font in `index.html`:
+```html
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+```
+
+Apply globally: `font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif`
+
+---
+
+### MOBILE RULES
+
+- Card must have no border-radius on sides if screen is very narrow — use `border-radius: 20px` always but never let it clip
+- Button minimum height 52px on mobile — thumb friendly
+- Font sizes: headline 22px, subtext 13px, pills 12px
+- Padding inside card 36px on mobile
+- No horizontal scroll at any viewport
+- Page must be scrollable if content is taller than screen on very small phones
+
+---
+
+### CRITICAL
+
+- The Discord button must still redirect to `/auth/discord` when clicked — do not break the auth
+- Do not add any navigation bar or header outside the card
+- Do not add any sidebar
+- Keep the page completely clean — just the background, the orbs, and the card
+- No images other than the uploaded logo
+- After implementing take a screenshot and confirm it looks clean and premium on both mobile 375px and desktop 1280px viewport
