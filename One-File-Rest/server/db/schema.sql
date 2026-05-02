@@ -201,6 +201,19 @@ CREATE TABLE IF NOT EXISTS deadline_alerts_sent (
   PRIMARY KEY (case_id, alert_type)
 );
 
+CREATE TABLE IF NOT EXISTS compliance_scores (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  score NUMERIC(5,2) NOT NULL,
+  grade VARCHAR(1) NOT NULL,
+  trend VARCHAR(20) DEFAULT 'stable',
+  factors JSONB DEFAULT '[]',
+  recommendations JSONB DEFAULT '[]',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_scores_case ON compliance_scores(case_id, created_at);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_cases_user ON cases(user_discord_id);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);

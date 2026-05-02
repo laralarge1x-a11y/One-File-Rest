@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import pool from '../db/client.js';
 import { calculateComplianceScore } from '../services/compliance-score.js';
-import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
@@ -51,8 +50,13 @@ router.get('/:id', async (req: Request, res: Response) => {
 
     const caseData = result.rows[0];
 
-    // Get compliance score
-    const complianceScore = await calculateComplianceScore(parseInt(id));
+    // Get compliance score (may fail gracefully)
+    let complianceScore = null;
+    try {
+      complianceScore = await calculateComplianceScore(parseInt(id));
+    } catch (scoreErr) {
+      console.warn('Could not calculate compliance score:', scoreErr);
+    }
 
     // Get messages
     const messagesResult = await pool.query(
@@ -62,7 +66,13 @@ router.get('/:id', async (req: Request, res: Response) => {
 
     // Get evidence
     const evidenceResult = await pool.query(
-      `SELECT * FROM evidence WHERE case_id = $1 ORDER BY created_at DESC`,
+      `SELECT * FROM evidence WHERE case_id = $1 ORDER BY uploaded_at DESC`,
+      [id]
+    );
+
+    // Get onboarding data
+    const onboardingResult = await pool.query(
+      `SELECT * FROM onboarding_data WHERE case_id = $1 LIMIT 1`,
       [id]
     );
 
@@ -71,6 +81,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       complianceScore,
       messages: messagesResult.rows,
       evidence: evidenceResult.rows,
+      onboarding: onboardingResult.rows[0] || null,
     });
   } catch (err) {
     console.error('Error fetching case:', err);
@@ -99,32 +110,57 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Insert into cases (only columns that exist in the table)
     const result = await pool.query(
       `INSERT INTO cases (
         user_discord_id, account_username, violation_type, violation_description,
-        appeal_deadline, total_gmv, face_videos_posted, commission_frozen,
-        account_purchase_date, status, priority, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+        appeal_deadline, commission_frozen,
+        status, priority, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
       RETURNING *`,
       [
         discordId,
         accountUsername,
         violationType,
         violationDescription,
-        appealDeadline,
-        totalGMV || 0,
-        faceVideosPosted || 0,
+        appealDeadline || null,
         commissionFrozen || false,
-        accountPurchaseDate || null,
-        'open',
+        'pending',
         'normal',
       ]
     );
 
     const newCase = result.rows[0];
 
-    // Calculate initial compliance score
-    const complianceScore = await calculateComplianceScore(newCase.id);
+    // Store extra onboarding fields in onboarding_data table
+    if (totalGMV !== undefined || faceVideosPosted !== undefined || accountPurchaseDate) {
+      try {
+        await pool.query(
+          `INSERT INTO onboarding_data (
+            case_id, user_discord_id, total_gmv, face_videos_posted,
+            account_purchase_date, commission_frozen
+          ) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            newCase.id,
+            discordId,
+            totalGMV || 0,
+            faceVideosPosted || 0,
+            accountPurchaseDate || null,
+            commissionFrozen || false,
+          ]
+        );
+      } catch (onboardErr) {
+        console.error('Failed to save onboarding data:', onboardErr);
+      }
+    }
+
+    // Calculate initial compliance score (non-fatal)
+    let complianceScore = null;
+    try {
+      complianceScore = await calculateComplianceScore(newCase.id);
+    } catch (scoreErr) {
+      console.warn('Could not calculate initial compliance score:', scoreErr);
+    }
 
     res.status(201).json({
       ...newCase,
@@ -159,7 +195,6 @@ router.patch('/:id', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // Build update query
     const updates: string[] = [];
     const values: any[] = [];
     let paramCount = 1;
@@ -196,14 +231,13 @@ router.patch('/:id', async (req: Request, res: Response) => {
 });
 
 /**
- * DELETE /api/cases/:id - Delete case (soft delete)
+ * DELETE /api/cases/:id - Close case (soft close)
  */
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const discordId = req.user?.discord_id;
 
-    // Verify ownership
     const caseResult = await pool.query(
       `SELECT user_discord_id FROM cases WHERE id = $1`,
       [id]
@@ -217,28 +251,25 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // Soft delete
     await pool.query(
-      `UPDATE cases SET status = 'deleted', updated_at = NOW() WHERE id = $1`,
+      `UPDATE cases SET status = 'closed', updated_at = NOW() WHERE id = $1`,
       [id]
     );
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error deleting case:', err);
-    res.status(500).json({ error: 'Failed to delete case' });
+    console.error('Error closing case:', err);
+    res.status(500).json({ error: 'Failed to close case' });
   }
 });
 
 /**
- * GET /api/cases/:id/compliance-score - Get compliance score for case
+ * GET /api/cases/:id/compliance-score
  */
 router.get('/:id/compliance-score', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
     const complianceScore = await calculateComplianceScore(parseInt(id));
-
     res.json(complianceScore);
   } catch (err) {
     console.error('Error fetching compliance score:', err);

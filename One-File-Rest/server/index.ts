@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 
 import pool from './db/client.js';
+import { setIO } from './socket-store.js';
 import { discordStrategy } from './auth/discord.js';
 import {
   requireAuth,
@@ -39,6 +40,7 @@ const httpServer = createServer(app);
 const io = new SocketServer(httpServer, {
   cors: { origin: '*', credentials: true },
 });
+setIO(io);
 
 // Middleware
 app.use(express.json());
@@ -105,6 +107,18 @@ app.get('/health', (req, res) => {
 io.on('connection', (socket) => {
   const userId = (socket.handshake.auth as any).userId;
 
+  // Client emits 'case:join' / 'case:leave' with { caseId } objects
+  socket.on('case:join', (data: { caseId: number } | number) => {
+    const caseId = typeof data === 'object' ? data.caseId : data;
+    socket.join(`case:${caseId}`);
+  });
+
+  socket.on('case:leave', (data: { caseId: number } | number) => {
+    const caseId = typeof data === 'object' ? data.caseId : data;
+    socket.leave(`case:${caseId}`);
+  });
+
+  // Legacy / alternative event names kept for compatibility
   socket.on('join:user', (discordId: string) => {
     socket.join(`user:${discordId}`);
   });
@@ -119,6 +133,25 @@ io.on('connection', (socket) => {
 
   socket.on('join:policy_alerts', () => {
     socket.join('policy_alerts');
+  });
+
+  // Handle message:send from client socket
+  socket.on('message:send', async (data: { caseId: number; content: string; type: string }) => {
+    try {
+      const { caseId, content } = data;
+      if (!userId || !content || !caseId) return;
+
+      const result = await pool.query(
+        `INSERT INTO messages (case_id, sender_discord_id, sender_type, content)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [caseId, userId, 'client', content]
+      );
+
+      // Broadcast to all users in this case room
+      io.to(`case:${caseId}`).emit('message:new', result.rows[0]);
+    } catch (err) {
+      console.error('Error handling message:send socket event:', err);
+    }
   });
 
   socket.on('disconnect', () => {

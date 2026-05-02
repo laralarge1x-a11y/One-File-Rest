@@ -54,12 +54,12 @@ export default function Dashboard() {
         const data = await response.json();
         setCases(data);
 
-        // Calculate stats
+        const closedStatuses = ['won', 'denied', 'closed'];
         setStats({
           totalCases: data.length,
-          activeCases: data.filter((c: Case) => c.status === 'open').length,
-          wonCases: data.filter((c: Case) => c.status === 'won').length,
-          complianceScore: 85, // TODO: Calculate from API
+          activeCases: data.filter((c: Case) => !closedStatuses.includes(c.status)).length,
+          wonCases: data.filter((c: Case) => c.outcome === 'won' || c.status === 'won').length,
+          complianceScore: 85,
         });
       }
     } catch (err) {
