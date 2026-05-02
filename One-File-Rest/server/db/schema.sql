@@ -8,8 +8,6 @@ CREATE TABLE IF NOT EXISTS "session" (
 );
 CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
 
---
--- Run this on every startup via migrate.ts (fully idempotent)
 -- All tables use IF NOT EXISTS for safe re-runs
 
 CREATE TABLE IF NOT EXISTS users (
@@ -19,10 +17,24 @@ CREATE TABLE IF NOT EXISTS users (
   discord_avatar VARCHAR(200),
   email VARCHAR(200),
   portal_token UUID UNIQUE DEFAULT gen_random_uuid(),
+  role TEXT DEFAULT 'client',
+  plan TEXT,
+  plan_start DATE,
+  plan_expiry DATE,
+  discord_channel_id TEXT,
+  discord_webhook_url TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_active TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Idempotent column additions for existing databases
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'client';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_start DATE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expiry DATE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_channel_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_webhook_url TEXT;
 
 CREATE TABLE IF NOT EXISTS staff (
   id SERIAL PRIMARY KEY,
@@ -118,7 +130,7 @@ CREATE TABLE IF NOT EXISTS evidence (
   id SERIAL PRIMARY KEY,
   case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
   uploaded_by_discord_id VARCHAR(20) NOT NULL,
-  cloudinary_public_id VARCHAR(300) NOT NULL,
+  cloudinary_public_id VARCHAR(300),
   file_url VARCHAR(500) NOT NULL,
   thumbnail_url VARCHAR(500),
   file_type VARCHAR(50),
@@ -127,12 +139,15 @@ CREATE TABLE IF NOT EXISTS evidence (
   ai_analysis TEXT,
   uploaded_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE evidence ALTER COLUMN cloudinary_public_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS appeal_templates (
   id SERIAL PRIMARY KEY,
-  violation_type VARCHAR(100) NOT NULL,
+  violation_type VARCHAR(100),
   template_name VARCHAR(200) NOT NULL,
   template_body TEXT NOT NULL,
+  category VARCHAR(100) DEFAULT 'appeal',
+  tags TEXT[],
   variables JSONB DEFAULT '[]',
   win_rate NUMERIC(5,2),
   use_count INTEGER DEFAULT 0,
@@ -141,6 +156,8 @@ CREATE TABLE IF NOT EXISTS appeal_templates (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE appeal_templates ADD COLUMN IF NOT EXISTS category VARCHAR(100) DEFAULT 'appeal';
+ALTER TABLE appeal_templates ADD COLUMN IF NOT EXISTS tags TEXT[];
 
 CREATE TABLE IF NOT EXISTS policy_alerts (
   id SERIAL PRIMARY KEY,
@@ -151,10 +168,12 @@ CREATE TABLE IF NOT EXISTS policy_alerts (
   tiktok_category VARCHAR(100),
   severity VARCHAR(20) DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
   affects_niches TEXT[],
+  active BOOLEAN DEFAULT true,
   published_at TIMESTAMPTZ DEFAULT NOW(),
   created_by VARCHAR(20),
   is_auto_generated BOOLEAN DEFAULT false
 );
+ALTER TABLE policy_alerts ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true;
 
 CREATE TABLE IF NOT EXISTS policy_alert_reads (
   user_discord_id VARCHAR(20) REFERENCES users(discord_id),
@@ -191,8 +210,12 @@ CREATE TABLE IF NOT EXISTS broadcast_logs (
   subject VARCHAR(300),
   content TEXT NOT NULL,
   recipient_count INTEGER,
+  delivered_count INTEGER DEFAULT 0,
+  failed_count INTEGER DEFAULT 0,
   sent_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE broadcast_logs ADD COLUMN IF NOT EXISTS delivered_count INTEGER DEFAULT 0;
+ALTER TABLE broadcast_logs ADD COLUMN IF NOT EXISTS failed_count INTEGER DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS staff_activity_log (
   id SERIAL PRIMARY KEY,
@@ -222,9 +245,56 @@ CREATE TABLE IF NOT EXISTS compliance_scores (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_compliance_scores_case ON compliance_scores(case_id, created_at);
+-- New tables from master prompt
+CREATE TABLE IF NOT EXISTS webhook_logs (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id),
+  event_type TEXT NOT NULL,
+  payload JSONB,
+  success BOOLEAN,
+  error_message TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS access_grants (
+  id SERIAL PRIMARY KEY,
+  granted_by_discord_id TEXT NOT NULL,
+  user_discord_id TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  start_date DATE,
+  end_date DATE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS staff_assignments (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id),
+  staff_user_id INTEGER REFERENCES users(id),
+  assigned_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS internal_notes (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id),
+  staff_user_id INTEGER REFERENCES users(id),
+  staff_discord_id VARCHAR(20),
+  note TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id SERIAL PRIMARY KEY,
+  actor_discord_id VARCHAR(20),
+  actor_user_id INTEGER REFERENCES users(id),
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id INTEGER,
+  details JSONB DEFAULT '{}',
+  created_at TIMESTAMP DEFAULT NOW()
+);
 
 -- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_compliance_scores_case ON compliance_scores(case_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_cases_user ON cases(user_discord_id);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_deadline ON cases(appeal_deadline);
@@ -232,3 +302,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_case ON messages(case_id);
 CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(is_read) WHERE is_read = false;
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_discord_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_evidence_case ON evidence(case_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_discord_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_logs_user ON webhook_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan) WHERE plan IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_plan_expiry ON users(plan_expiry) WHERE plan_expiry IS NOT NULL;

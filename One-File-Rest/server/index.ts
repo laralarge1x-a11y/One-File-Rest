@@ -11,10 +11,7 @@ import fs from 'fs';
 import pool from './db/client.js';
 import { setIO } from './socket-store.js';
 import { discordStrategy } from './auth/discord.js';
-import {
-  requireAuth,
-  requireStaff,
-} from './auth/middleware.js';
+import { requireAuth, requireStaff, requireAdmin } from './auth/middleware.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -28,13 +25,15 @@ import aiRoutes from './routes/ai.js';
 import analyticsRoutes from './routes/analytics.js';
 import subscriptionsRoutes from './routes/subscriptions.js';
 import complianceRoutes from './routes/compliance.js';
+import adminRoutes from './routes/admin.js';
+import botBridgeRoutes from './routes/botbridge.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
 
 // ─── Environment validation ────────────────────────────────────────────────
 const REQUIRED_ENV = ['SESSION_SECRET', 'DATABASE_URL'];
-const OPTIONAL_WARN = ['DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET', 'DISCORD_REDIRECT_URI'];
+const OPTIONAL_WARN = ['DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET', 'DISCORD_REDIRECT_URI', 'GROQ_API_KEY', 'DISCORD_BOT_TOKEN', 'ADMIN_DISCORD_IDS', 'BOT_BRIDGE_TOKEN'];
 
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
@@ -44,7 +43,7 @@ for (const key of REQUIRED_ENV) {
 }
 for (const key of OPTIONAL_WARN) {
   if (!process.env[key]) {
-    console.warn(`⚠️  Missing optional env var: ${key} (Discord OAuth will be unavailable)`);
+    console.warn(`⚠️  Missing env var: ${key}`);
   }
 }
 
@@ -57,10 +56,7 @@ const io = new SocketServer(httpServer, {
 });
 setIO(io);
 
-// Trust Replit's reverse proxy so secure cookies work in production
 app.set('trust proxy', 1);
-
-// Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -70,7 +66,7 @@ app.use(
   session({
     store: new PgSession({
       pool,
-      createTableIfMissing: true, // auto-create the "session" table if it doesn't exist
+      createTableIfMissing: true,
       tableName: 'session',
     }),
     secret: process.env.SESSION_SECRET!,
@@ -80,7 +76,7 @@ app.use(
       httpOnly: true,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     },
   })
 );
@@ -94,20 +90,27 @@ if (discordStrategy) {
 }
 
 passport.serializeUser((user: any, done) => {
-  console.log(`[Auth] Serializing user: discord_id=${user.discord_id}`);
   done(null, user.discord_id);
 });
 
 passport.deserializeUser(async (discord_id: string, done) => {
   try {
+    const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((id) => id.trim()).filter(Boolean);
     const result = await pool.query(
-      `SELECT u.*, COALESCE(s.role, 'client') as role
+      `SELECT u.*, COALESCE(s.role, u.role, 'client') as resolved_role
        FROM users u
        LEFT JOIN staff s ON u.discord_id = s.discord_id
        WHERE u.discord_id = $1`,
       [discord_id]
     );
-    const user = result.rows[0] || null;
+    if (!result.rows[0]) return done(null, null);
+    const user = result.rows[0];
+    // Override with admin if in ADMIN_DISCORD_IDS
+    if (adminIds.includes(discord_id)) {
+      user.role = 'admin';
+    } else {
+      user.role = user.resolved_role || 'client';
+    }
     done(null, user);
   } catch (err) {
     console.error('[Auth] deserializeUser error:', err);
@@ -120,6 +123,7 @@ app.use(passport.session());
 
 // ─── Routes ───────────────────────────────────────────────────────────────
 app.use('/auth', authRoutes);
+app.use('/bot', botBridgeRoutes);
 app.use('/api/cases', requireAuth, casesRoutes);
 app.use('/api/messages', requireAuth, messagesRoutes);
 app.use('/api/evidence', requireAuth, evidenceRoutes);
@@ -130,13 +134,15 @@ app.use('/api/ai', requireAuth, aiRoutes);
 app.use('/api/analytics', requireStaff, analyticsRoutes);
 app.use('/api/subscriptions', requireAuth, subscriptionsRoutes);
 app.use('/api/compliance', requireAuth, complianceRoutes);
+app.use('/api/admin', requireStaff, adminRoutes);
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     env: process.env.NODE_ENV,
     discord_oauth: !!(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET),
+    bot_configured: !!process.env.DISCORD_BOT_TOKEN,
     timestamp: new Date().toISOString(),
   });
 });
@@ -149,35 +155,21 @@ io.on('connection', (socket) => {
     const caseId = typeof data === 'object' ? data.caseId : data;
     socket.join(`case:${caseId}`);
   });
-
   socket.on('case:leave', (data: { caseId: number } | number) => {
     const caseId = typeof data === 'object' ? data.caseId : data;
     socket.leave(`case:${caseId}`);
   });
+  socket.on('join:user', (discordId: string) => { socket.join(`user:${discordId}`); });
+  socket.on('join:case', (caseId: number) => { socket.join(`case:${caseId}`); });
+  socket.on('join:admin', () => { socket.join('admin'); });
+  socket.on('join:policy_alerts', () => { socket.join('policy_alerts'); });
 
-  socket.on('join:user', (discordId: string) => {
-    socket.join(`user:${discordId}`);
-  });
-
-  socket.on('join:case', (caseId: number) => {
-    socket.join(`case:${caseId}`);
-  });
-
-  socket.on('join:admin', () => {
-    socket.join('admin');
-  });
-
-  socket.on('join:policy_alerts', () => {
-    socket.join('policy_alerts');
-  });
-
-  socket.on('message:send', async (data: { caseId: number; content: string; type?: string }) => {
+  socket.on('message:send', async (data: { caseId: number; content: string }) => {
     try {
       const { caseId, content } = data;
       if (!userId || !content || !caseId) return;
       const result = await pool.query(
-        `INSERT INTO messages (case_id, sender_discord_id, sender_type, content)
-         VALUES ($1, $2, 'client', $3) RETURNING *`,
+        `INSERT INTO messages (case_id, sender_discord_id, sender_type, content) VALUES ($1, $2, 'client', $3) RETURNING *`,
         [caseId, userId, content]
       );
       io.to(`case:${caseId}`).emit('message:new', result.rows[0]);
@@ -185,29 +177,18 @@ io.on('connection', (socket) => {
       console.error('[Socket] message:send error:', err);
     }
   });
-
-  socket.on('disconnect', () => {
-    // silent — avoid log spam in production
-  });
 });
 
 // ─── Static frontend (production only) ────────────────────────────────────
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
   app.use(express.static(clientDist, { maxAge: '1h' }));
-  app.use((_req, res) => {
-    res.sendFile(path.join(clientDist, 'index.html'));
-  });
+  app.use((_req, res) => { res.sendFile(path.join(clientDist, 'index.html')); });
 }
 
-// ─── Global error handler (must be last) ─────────────────────────────────
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('[UNHANDLED ERROR]', {
-    method: req.method,
-    url: req.url,
-    message: err?.message,
-    stack: err?.stack,
-  });
+// ─── Global error handler ─────────────────────────────────────────────────
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[UNHANDLED ERROR]', { method: req.method, url: req.url, message: err?.message });
   res.status(err?.status || 500).json({
     error: 'Internal Server Error',
     message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err?.message,
@@ -223,12 +204,24 @@ async function start() {
     await pool.query(schema);
     console.log('✓ Database schema migrated');
 
-    // Seed owner staff rows from environment
+    // Seed owner/admin staff rows from environment
+    const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').filter(Boolean);
+    for (const adminId of adminIds) {
+      await pool.query(
+        `INSERT INTO staff (discord_id, name, role, active) VALUES ($1, $2, 'owner', true)
+         ON CONFLICT (discord_id) DO UPDATE SET role = 'owner', active = true`,
+        [adminId.trim(), 'Admin']
+      );
+      await pool.query(
+        `UPDATE users SET role = 'admin' WHERE discord_id = $1`,
+        [adminId.trim()]
+      );
+    }
+    // Legacy OWNER_DISCORD_IDS support
     const ownerIds = (process.env.OWNER_DISCORD_IDS || '').split(',').filter(Boolean);
     for (const ownerId of ownerIds) {
       await pool.query(
-        `INSERT INTO staff (discord_id, name, role, active)
-         VALUES ($1, $2, 'owner', true)
+        `INSERT INTO staff (discord_id, name, role, active) VALUES ($1, $2, 'owner', true)
          ON CONFLICT (discord_id) DO NOTHING`,
         [ownerId.trim(), 'Owner']
       );
@@ -249,5 +242,4 @@ async function start() {
 }
 
 start();
-
 export { app, io };

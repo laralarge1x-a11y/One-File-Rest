@@ -1,0 +1,547 @@
+Here is your complete master prompt for Replit. Copy and paste every word:
+
+---
+
+## REPLIT MASTER PROMPT — READ EVERY WORD AND IMPLEMENT ALL OF IT
+
+---
+
+### UNDERSTANDING THE SYSTEM FIRST
+
+This is a TikTok Shop account recovery portal. Clients pay for plans, get a private Discord channel, and use a web portal to submit cases and communicate with staff. The Discord bot and the web portal are two-way mirrors of each other. Here is the complete pricing:
+
+- **Basic Guard Plan** — $79/month — 1 violation/month, 48–72h response, custom appeal writing, 1-on-1 standard support, basic violation analysis, appeal status tracking, optional express upgrade
+- **Fortnightly Defense Plan** — $159/2 weeks — up to 3 violations per 2 weeks, priority response under 12 hours, full-service appeal handling, direct expert chat, advanced violation analysis + prevention tips, escalation support, faster platform follow-ups, ticket priority over Basic users
+- **ProShield Creator Plan** — $259/month — up to 5 violations/month, priority handling top queue, end-to-end case management, direct 1-on-1 expert access fast replies, advanced appeal frameworks + proven templates, weekly account audits and risk checks, personalized prevention strategy, creator growth and compliance guidance, unlimited support and follow-ups, highest escalation priority
+
+These plans must be stored and displayed everywhere in the system accurately with all their features.
+
+---
+
+### PART 1: DISCORD BOT — COMPLETE REWRITE
+
+Create `bot/index.ts` using discord.js v14 and TypeScript. The bot runs as a completely separate process from the server.
+
+**CRITICAL RULE: Do NOT create any Discord channels. The channel where the admin runs `/giveaccess` IS the customer's private channel. The bot reads that channel's ID and creates a webhook in it. That is the customer's permanent channel.**
+
+---
+
+#### SLASH COMMAND: `/giveaccess`
+
+Options:
+- `user` (type: User, required) — the Discord user getting access
+- `plan` (type: String, required, choices: `basic_guard`, `fortnightly_defense`, `proshield_creator`)
+- `start_date` (type: String, required) — format YYYY-MM-DD
+- `end_date` (type: String, required) — format YYYY-MM-DD
+
+When this command runs, do ALL of the following in order:
+
+**Step 1 — Security check**
+Check if the person running the command has a Discord ID listed in `process.env.ADMIN_DISCORD_IDS` (comma-separated). If not, reply with "❌ You don't have permission to run this command." and stop.
+
+**Step 2 — Get the channel**
+The channel where this command was typed IS the customer's private channel. Get `interaction.channelId` as `discord_channel_id`. Do NOT create any new channel.
+
+**Step 3 — Create a webhook in this channel**
+Create a webhook in `interaction.channel` named `Portal Updates` with avatar from a URL you define. Save the webhook URL. If a webhook named `Portal Updates` already exists in this channel, fetch it instead of creating a duplicate — check existing webhooks first.
+
+**Step 4 — Save everything to database**
+Call `POST /bot/users/sync` on the bot bridge API with:
+```json
+{
+  "discord_id": "user's discord id",
+  "discord_username": "user's username",
+  "discord_avatar": "user's avatar hash",
+  "plan": "basic_guard / fortnightly_defense / proshield_creator",
+  "plan_start": "start_date",
+  "plan_expiry": "end_date",
+  "discord_channel_id": "channel id",
+  "discord_webhook_url": "full webhook url"
+}
+```
+Include header `Authorization: Bearer {BOT_BRIDGE_TOKEN}`.
+
+**Step 5 — Send welcome message IN THIS SAME CHANNEL (not DM)**
+Post an embed in the current channel (customer's channel) with:
+- Color: based on plan — basic=`#5865F2` blue, fortnightly=`#57F287` green, proshield=`#FFD700` gold
+- Title: `✅ Welcome to TikTok Recovery Portal, {username}!`
+- Description: `Your access has been granted. Here is everything you need to know.`
+- Fields:
+  - `📦 Your Plan` → the full plan name spelled out (e.g. "ProShield Creator Plan")
+  - `💰 Price` → correct price from our pricing above
+  - `📅 Active From` → start_date formatted nicely
+  - `📅 Active Until` → end_date formatted nicely
+  - `⚡ Response Time` → correct value from plan (e.g. "Under 12 hours" for fortnightly)
+  - `🎯 Violations Covered` → correct value from plan
+  - `✨ Your Benefits` → list ALL features of their plan as bullet points, pulled from the pricing above accurately
+  - `🌐 Portal Access` → `Login with Discord at: https://one-file-rest.replit.app`
+  - `📋 How to Use` → "1. Click the portal link above\n2. Login with your Discord account (one time only, you stay logged in)\n3. Submit your cases and track progress\n4. All updates appear here in this channel automatically"
+- Footer: `TikTok Recovery Portal • Access granted by {admin username}`
+- Timestamp: current time
+
+**Step 6 — Reply to admin**
+Ephemeral reply (only admin sees it): `✅ Access granted for {username}. Webhook created in this channel. Portal link sent. Database updated.`
+
+---
+
+#### SLASH COMMAND: `/revokeaccess`
+
+Options:
+- `user` (type: User, required)
+
+Steps:
+1. Security check — admin only
+2. Find the user in database via bot bridge `GET /bot/users/{discordId}`
+3. Call bot bridge to set their plan to null and clear expiry
+4. Do NOT delete or touch the channel
+5. Post in the user's stored `discord_channel_id` channel an embed:
+   - Color: `#ED4245` red
+   - Title: `⛔ Access Revoked`
+   - Description: `Your TikTok Recovery Portal access has been revoked.`
+   - Fields:
+     - `📋 What This Means` → "Your portal account is now inactive. You can no longer submit new cases or access the portal."
+     - `❓ Questions?` → "Please contact support if you believe this is a mistake."
+   - Footer: `TikTok Recovery Portal • Revoked by {admin username}`
+6. Update database: set `plan = null`, `plan_expiry = null`
+7. Reply to admin ephemerally: `✅ Access revoked for {username}. They have been notified in their channel.`
+
+---
+
+#### SLASH COMMAND: `/casestatus`
+
+Options:
+- `user` (type: User, required)
+
+Steps:
+1. Admin only check
+2. Call bot bridge `GET /bot/cases` filtered by discord_id
+3. Post in current channel an embed showing all their cases with status, created date, case ID
+
+---
+
+#### BOT STARTUP
+
+On ready event, log `✅ Bot online: {bot username}`. Register all slash commands to the guild using `DISCORD_GUILD_ID` env var. Listen for `messageCreate` events — when a message is sent in any channel that matches a stored `discord_channel_id`, and the author is not the bot, call `POST /bot/messages/receive` on the bridge with the message content and discord_id. This makes Discord→Portal messaging work.
+
+---
+
+### PART 2: WEBHOOK MIRROR — PORTAL TO DISCORD
+
+Create `server/services/webhook.ts` as a reusable helper. This is the most important service file.
+
+```typescript
+// fireWebhook(userId, eventType, embed) 
+// Looks up user's discord_webhook_url from DB
+// POSTs the embed to that webhook URL
+// Logs to webhook_logs table (success or failure)
+// NEVER throws — always try/catch, webhook failure must not affect the main request
+// Non-blocking: call with .catch(console.error), do not await in main flow
+```
+
+Embed templates for each event — implement all of these:
+
+**New Case Created:**
+- Color: `#5865F2`
+- Title: `📋 New Case Submitted`
+- Fields: Case ID, Plan, Violation Type, Description (truncated to 200 chars), Status: Pending
+
+**New Message from Client:**
+- Color: `#57F287`
+- Title: `💬 New Message from Client`
+- Fields: Message preview (200 chars), Timestamp
+- Footer: `Reply on the portal to respond`
+
+**Staff Reply Sent:**
+- Color: `#FEE75C`
+- Title: `👨‍💼 Staff Reply`
+- Fields: Staff name, Message preview
+- Footer: `Login to portal to view full conversation`
+
+**Case Status Changed:**
+- Color: `#EB459E`
+- Title: `🔄 Case Status Updated`
+- Fields: Case ID, Old Status, New Status, Updated by
+
+**Evidence Uploaded:**
+- Color: `#9B59B6`
+- Title: `📎 Evidence Uploaded`
+- Fields: File name, Case ID, Uploaded by
+
+**Case Resolved:**
+- Color: `#57F287`
+- Title: `✅ Case Resolved`
+- Fields: Case ID, Resolution summary, Time taken
+
+Now add `fireWebhook` calls in these files — after every write, non-blocking:
+- `server/routes/cases.ts` — after INSERT (new case), after status UPDATE, after resolve
+- `server/routes/messages.ts` — after every new message INSERT, detect if sender is staff or client and use correct embed
+- `server/routes/evidence.ts` — after evidence upload
+
+---
+
+### PART 3: AUTH — ADMIN AUTO-DETECTION AND MAGIC LINK
+
+In `server/routes/auth.ts`, after successful Discord OAuth and user upsert:
+
+**Admin detection:**
+1. Read `process.env.ADMIN_DISCORD_IDS`, split by comma, trim whitespace
+2. If logged-in user's `discord_id` is in that array → `UPDATE users SET role = 'admin' WHERE discord_id = $1`
+3. Else if role is currently not 'staff' → `UPDATE users SET role = 'client' WHERE discord_id = $1`
+4. After session save, redirect based on role:
+   - `admin` → `/admin`
+   - `staff` → `/admin` (staff also use admin panel but with limited permissions)
+   - `client` → `/dashboard`
+
+**Magic link login:**
+- `GET /auth/access/:token`
+- `SELECT * FROM users WHERE portal_token = $1`
+- If found: `req.session.userId = user.id`, `req.session.save()`, redirect to `/dashboard`
+- If not found: redirect to `/?error=invalid_token`
+
+**Portal token generation:**
+- When upserting a user, if they don't have a `portal_token`, generate one with `crypto.randomUUID()` and save it
+
+---
+
+### PART 4: DATABASE MIGRATIONS
+
+At server startup in `server/index.ts`, run these migrations BEFORE starting the server (use a `runMigrations()` async function called before `app.listen`):
+
+```sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_start DATE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expiry DATE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_channel_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_webhook_url TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS portal_token UUID DEFAULT gen_random_uuid();
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'client';
+
+CREATE TABLE IF NOT EXISTS webhook_logs (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id),
+  event_type TEXT NOT NULL,
+  payload JSONB,
+  success BOOLEAN,
+  error_message TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS access_grants (
+  id SERIAL PRIMARY KEY,
+  granted_by_discord_id TEXT NOT NULL,
+  user_discord_id TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  start_date DATE,
+  end_date DATE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS staff_assignments (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id),
+  staff_user_id INTEGER REFERENCES users(id),
+  assigned_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS internal_notes (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id),
+  staff_user_id INTEGER REFERENCES users(id),
+  note TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id SERIAL PRIMARY KEY,
+  actor_user_id INTEGER REFERENCES users(id),
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id INTEGER,
+  details JSONB,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+---
+
+### PART 5: ADVANCED ADMIN PANEL — COMPLETE REBUILD
+
+Completely replace everything in `client/src/pages/admin/`. Build a professional, dark-themed admin panel with a fixed left sidebar. Use Tailwind CSS throughout. Every section below must be fully functional — no stubs, no placeholder data.
+
+**SIDEBAR NAVIGATION** — fixed left side, dark background `#0F0F0F`, accent color `#5865F2`:
+- 🏠 Overview
+- 📋 Cases
+- 👥 Clients
+- 🤖 AI Tools
+- 📊 Analytics
+- 👨‍💼 Staff
+- 📢 Broadcast
+- 📝 Templates
+- ⚙️ Settings
+- Show logged-in admin's Discord avatar and username at bottom of sidebar
+- Show a live green dot "System Online" indicator
+
+---
+
+#### A. OVERVIEW DASHBOARD
+
+Top row — 6 stat cards:
+- Total Clients (count of users with a plan)
+- Active Cases (status = pending or in_progress)
+- Resolved This Month
+- Expiring Soon (plan_expiry within 7 days) — show in orange
+- Total Revenue — calculate: count(basic)*79 + count(fortnightly)*159 + count(proshield)*259
+- Avg Resolution Time in hours
+
+Middle row — two columns:
+- LEFT: Live Activity Feed — last 20 events from `audit_log` table, auto-refreshes every 10 seconds via socket.io, shows icon + description + time ago
+- RIGHT: Urgent Alerts — cases with deadline within 72 hours shown as red cards with client name, case ID, time remaining, quick "View Case" button
+
+Bottom row:
+- Recent Cases table (last 10) with client, status, plan badge, created date
+- Quick Actions: "New Broadcast" button, "View Expiring Plans" button, "Generate Weekly Report" button (Groq generates a summary of the week's activity)
+
+---
+
+#### B. CASE MANAGEMENT (`/admin/cases`)
+
+Full page table with these columns: Case ID, Client (avatar + name), Plan badge (colored), Violation Type, Status (colored badge), Created, Deadline, Assigned To, Actions
+
+**Filtering bar at top:**
+- Search input (searches case ID, client name, description)
+- Status filter dropdown: All, Pending, In Progress, Resolved, Closed
+- Plan filter: All, Basic Guard, Fortnightly Defense, ProShield
+- Date range picker: From / To
+- Assigned To filter: All staff members dropdown
+- "Export CSV" button — downloads filtered results
+
+**When clicking a case row**, open a RIGHT SLIDE-OUT PANEL (not a new page) — panel is 600px wide, slides in from right, has:
+
+Section 1 — Case Header:
+- Case ID, status badge, created date, deadline with countdown timer (e.g. "2 days 14 hours remaining" in red if under 72h)
+- Client name + Discord avatar + plan badge
+- Quick status change buttons: Pending / In Progress / Resolved / Closed — clicking confirms then updates
+
+Section 2 — Case Details:
+- Violation type, platform, description (full text)
+- Evidence files list — each file shows filename, upload date, and a preview button (image files show thumbnail, others show file icon)
+
+Section 3 — AI Tools (inline, in the slide-out):
+- "🤖 Summarize Case" button → POST to `/api/ai/case-summary` with full case data → show streaming response in a styled box
+- "✍️ Generate Appeal Letter" button → POST to `/api/ai/generate-appeal` → show editable textarea with the result + "Copy" button + "Save as Template" button
+- "🔍 Analyze Violation" button → POST to `/api/ai/analyze-violation` → show severity rating, likely outcome, recommended strategy
+
+Section 4 — Messages Thread:
+- Full chronological message history
+- Each message shows: sender avatar, name, role badge (Client/Staff), message text, timestamp
+- "Reply" textarea at bottom — staff can reply directly from this panel
+- Sends to `POST /api/messages` and fires webhook automatically
+
+Section 5 — Internal Notes (staff-only, client never sees):
+- List of internal notes from `internal_notes` table
+- Add note textarea + button
+- Each note shows: staff name, note text, timestamp
+
+Section 6 — Assignments and Timeline:
+- Assign to staff dropdown — saves to `staff_assignments`
+- Full event timeline: case created → status changes → messages → evidence uploads → notes, all in chronological order pulled from `audit_log`
+
+---
+
+#### C. CLIENT MANAGEMENT (`/admin/clients`)
+
+Table columns: Avatar, Discord Username, Discord ID, Plan (colored badge), Plan Start, Plan Expiry (red if expired, orange if within 7 days), Cases Count, Last Active, Status (Active/Expired/No Plan), Actions
+
+**Client Profile Page** (clicking a client opens `/admin/clients/{id}`):
+
+Top section — client card:
+- Large Discord avatar
+- Username, Discord ID, join date
+- Plan card showing: plan name, price, all features listed, start date, expiry date with countdown
+- Action buttons row:
+  - "✏️ Edit Plan" → modal to change plan and dates → saves to DB + fires webhook notifying client
+  - "🔗 Copy Portal Link" → generates the magic link and copies to clipboard
+  - "🔄 Regenerate Token" → creates new portal_token, shows new link
+  - "📨 Send Message via Bot" → modal with textarea → POST to bot bridge → bot posts in their channel
+  - "⛔ Revoke Access" → confirmation modal → sets plan to null + fires revoke webhook
+
+Middle section — their cases:
+- All cases in a mini table with same columns as case management
+- Click opens the slide-out panel
+
+Bottom section — message history:
+- All messages across all their cases in one timeline
+
+---
+
+#### D. AI TOOLS (`/admin/ai`)
+
+**Tab 1 — Image Analyzer:**
+- Drag and drop zone for images (screenshots, TikTok violation notices, policy emails)
+- On upload, convert to base64 and send to `POST /api/ai/analyze-image` 
+- Backend uses Groq with model `meta-llama/llama-4-scout-17b-16e-instruct` which supports vision
+- Display response in sections: What Was Detected, Violation Severity (Low/Medium/High/Critical with colored badge), Policy Section Violated, Recommended Action, Suggested Appeal Angle
+- "Use in Case" button → lets admin attach this analysis to a case
+
+**Tab 2 — Appeal Letter Generator:**
+- Form fields: Violation Type, Platform (TikTok Shop / TikTok), Account Age, Previous Violations (yes/no), Business Type, Additional Context
+- "Generate Appeal" button → streams response from Groq
+- Show letter in styled editable textarea
+- Buttons: Copy, Save as Template, Send to Client (posts in their Discord channel via webhook)
+
+**Tab 3 — Bulk Case Analyzer:**
+- "Analyze All Pending Cases" button
+- Fetches all pending cases, sends to Groq asking for priority ranking and recommended actions
+- Shows a ranked list: Case #ID → Priority Level → Recommended Action → Estimated Resolution Time
+
+**Tab 4 — Policy Explainer:**
+- Textarea: paste any TikTok policy text
+- "Explain This" button → Groq explains in simple language
+- "Find Affected Clients" button → searches cases for mentions of that policy violation type
+
+---
+
+#### E. ANALYTICS (`/admin/analytics`)
+
+All charts use recharts library. All data from real database queries.
+
+- Revenue Over Time — bar chart by month, stacked by plan type
+- Cases by Status — donut chart
+- Plan Distribution — pie chart with revenue contribution
+- Resolution Time Trend — line chart showing average days to resolve by week
+- Cases by Violation Type — horizontal bar chart
+- Staff Performance Table — name, cases assigned, cases resolved, avg response time in hours, resolution rate percentage
+- Client Retention — how many clients renewed (had plan, plan expired, got new plan)
+
+Date range filter at top affects all charts.
+
+---
+
+#### F. STAFF MANAGEMENT (`/admin/staff`)
+
+Table: Avatar, Name, Discord ID, Role (Admin/Staff), Cases Assigned, Cases Resolved, Joined Date, Actions
+
+"Add Staff Member" button → modal:
+- Input Discord ID
+- Bot bridge fetches their Discord profile (username, avatar)
+- Select role: Staff or Admin
+- Save → upserts user with correct role
+
+Click staff member → their profile:
+- All assigned cases
+- Performance metrics
+- "Remove Staff" button → sets role back to 'client'
+- "Promote to Admin / Demote to Staff" toggle
+
+---
+
+#### G. BROADCAST (`/admin/broadcast`)
+
+Compose section:
+- Title input
+- Message body (rich textarea)
+- Target audience: All Clients / Basic Guard only / Fortnightly Defense only / ProShield Creator only / Expiring within 7 days
+- Preview section showing how the Discord embed will look (live preview updates as you type)
+- "Send Broadcast" button → confirm modal → POST to `/api/broadcast` → server fires webhook to ALL matching users' `discord_webhook_url` and saves to `broadcast_logs`
+
+History table:
+- Past broadcasts: Title, Target, Sent At, Delivered Count, Failed Count
+- Click to view full message
+
+---
+
+#### H. TEMPLATES (`/admin/templates`)
+
+Table: Template Name, Category (Appeal/Response/Notification), Last Updated, Actions (Edit, Delete, Preview)
+
+"Create Template" button → full editor:
+- Name input
+- Category selector
+- Tags input (comma separated)
+- Body: large textarea with markdown support
+- Variable hints: show available variables like `{client_name}`, `{case_id}`, `{violation_type}`, `{plan_name}`
+- "AI Enhance" button → sends to Groq asking to improve the template professionally
+- Save button
+
+Templates integrate with Case Management slide-out: a "Use Template" dropdown in the reply box lets staff pick a template, variables auto-fill.
+
+---
+
+#### I. SETTINGS (`/admin/settings`)
+
+Section 1 — Environment Status:
+- Check each required env var and show ✅ Set or ❌ Missing (never show actual values)
+- Vars to check: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_GUILD_ID`, `DISCORD_REDIRECT_URI`, `ADMIN_DISCORD_IDS`, `BOT_BRIDGE_TOKEN`, `SESSION_SECRET`, `DATABASE_URL`, `GROQ_API_KEY`
+
+Section 2 — Webhook Test:
+- Input: webhook URL
+- Button: "Send Test Message" → fires a test embed to that URL
+- Shows success or error response
+
+Section 3 — Policy Alerts Manager:
+- Table of `policy_alerts` table records
+- Add / Edit / Delete policy alerts
+- Each alert has: title, content, severity, active toggle
+
+Section 4 — System Stats:
+- Database table row counts (users, cases, messages, webhook_logs)
+- Server uptime
+- Last restart time
+
+Section 5 — Danger Zone:
+- "Clear Webhook Logs older than 30 days" button with confirmation
+- "Export Full Database Backup" button → triggers a CSV export of all tables
+
+---
+
+### PART 6: NEW API ENDPOINTS NEEDED
+
+Add these to the server — all require admin/staff auth middleware:
+
+- `POST /api/ai/case-summary` — receives case object, calls Groq, returns summary
+- `POST /api/ai/generate-appeal` — receives case details, calls Groq, returns appeal letter
+- `POST /api/ai/analyze-violation` — receives violation details, calls Groq, returns analysis
+- `POST /api/ai/analyze-image` — receives base64 image, calls Groq vision model `meta-llama/llama-4-scout-17b-16e-instruct`, returns analysis
+- `POST /api/ai/bulk-analyze` — receives array of cases, calls Groq, returns priority ranking
+- `GET /api/admin/stats` — returns all overview dashboard numbers
+- `GET /api/admin/activity` — returns last 20 audit_log entries
+- `GET /api/admin/alerts` — returns cases with deadline within 72 hours
+- `POST /api/admin/notes` — adds internal note to a case
+- `GET /api/admin/notes/:caseId` — gets internal notes for a case
+- `POST /api/admin/assign` — assigns case to staff member
+- `GET /api/admin/staff` — returns all staff and admin users
+- `POST /api/admin/staff` — adds a new staff member
+- `DELETE /api/admin/staff/:id` — removes staff role
+- `GET /api/admin/webhook-logs` — returns webhook log history
+- `POST /api/admin/test-webhook` — fires test embed to provided URL
+- `GET /api/admin/export/cases` — returns CSV of all cases
+- `GET /api/admin/clients/:id/portal-link` — returns magic link for a client
+- `POST /api/admin/clients/:id/regenerate-token` — creates new portal_token
+
+---
+
+### REQUIRED ENV VARS — ADD ALL TO REPLIT SECRETS
+
+- `DISCORD_BOT_TOKEN`
+- `DISCORD_GUILD_ID`
+- `ADMIN_DISCORD_IDS` — comma-separated Discord user IDs
+- `BOT_BRIDGE_TOKEN`
+- `GROQ_API_KEY`
+- `DISCORD_CLIENT_ID`
+- `DISCORD_CLIENT_SECRET`
+- `DISCORD_REDIRECT_URI` = `https://one-file-rest.replit.app/auth/callback`
+- `SESSION_SECRET`
+- `DATABASE_URL`
+
+---
+
+### FINAL RULES FOR REPLIT
+
+1. Every single route and function must have try/catch with `console.error` logging
+2. Webhook fires are ALWAYS non-blocking — use `.catch(console.error)` never `await` in main request flow
+3. The bot process and server process run separately — bot has its own `package.json` scripts or runs via `concurrently`
+4. Write every file in TypeScript
+5. Admin panel pages must guard with `useEffect` checking `/api/auth/me` — if not admin, redirect to `/`
+6. Every database query uses parameterized queries — never string concatenation
+7. After all implementation, restart server and bot, confirm both start with no errors in console
+8. The audit_log table must be written to on every significant action: case created, status changed, message sent, plan granted, plan revoked, staff assigned

@@ -4,11 +4,18 @@ import pool from '../db/client.js';
 
 const router = Router();
 
+// Admin Discord IDs from env
+function getAdminIds(): string[] {
+  return (process.env.ADMIN_DISCORD_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
 // ─── Discord OAuth initiation ─────────────────────────────────────────────
 router.get('/discord', (req: Request, res: Response, next: NextFunction) => {
   console.log('[Auth] /auth/discord — initiating Discord OAuth redirect');
   if (!process.env.DISCORD_CLIENT_ID) {
-    console.error('[Auth] DISCORD_CLIENT_ID is not set — cannot initiate OAuth');
     return res.status(503).send('Discord OAuth is not configured. Please set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI in Secrets.');
   }
   passport.authenticate('discord')(req, res, next);
@@ -21,11 +28,8 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
   console.log('[Auth] /auth/callback received', {
     hasCode: !!code,
     error: error || null,
-    error_description: error_description || null,
-    redirectUri: process.env.DISCORD_REDIRECT_URI,
   });
 
-  // Discord sent back an OAuth error (user denied, etc.)
   if (error) {
     console.error('[Auth] Discord returned an error:', error, error_description);
     return res.redirect(`/?error=${encodeURIComponent(String(error_description || error))}`);
@@ -36,7 +40,7 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
     return res.redirect('/?error=no_code');
   }
 
-  passport.authenticate('discord', (err: any, user: any, info: any) => {
+  passport.authenticate('discord', async (err: any, user: any, info: any) => {
     if (err) {
       console.error('[Auth] Passport authentication error:', err?.message || err);
       return next(err);
@@ -50,13 +54,53 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
     console.log('[Auth] Passport authenticated user:', {
       discord_id: user.discord_id,
       username: user.discord_username,
-      role: user.role,
     });
 
-    req.login(user, (loginErr) => {
+    req.login(user, async (loginErr) => {
       if (loginErr) {
         console.error('[Auth] req.login failed:', loginErr?.message || loginErr);
         return next(loginErr);
+      }
+
+      try {
+        // Admin detection — check ADMIN_DISCORD_IDS
+        const adminIds = getAdminIds();
+        const isAdmin = adminIds.includes(user.discord_id);
+        const isStaff = ['support', 'case_manager', 'owner'].includes(user.role);
+
+        let finalRole = user.role || 'client';
+        if (isAdmin) {
+          finalRole = 'admin';
+          await pool.query(
+            `UPDATE users SET role = 'admin', updated_at = NOW() WHERE discord_id = $1`,
+            [user.discord_id]
+          );
+          console.log('[Auth] User promoted to admin:', user.discord_id);
+        } else if (!isStaff && user.role !== 'client') {
+          finalRole = 'client';
+          await pool.query(
+            `UPDATE users SET role = 'client', updated_at = NOW() WHERE discord_id = $1`,
+            [user.discord_id]
+          );
+        }
+
+        // Portal token — ensure it exists
+        if (!user.portal_token) {
+          const tokenResult = await pool.query(
+            `UPDATE users SET portal_token = gen_random_uuid(), updated_at = NOW()
+             WHERE discord_id = $1 AND portal_token IS NULL RETURNING portal_token`,
+            [user.discord_id]
+          );
+          if (tokenResult.rows[0]) {
+            user.portal_token = tokenResult.rows[0].portal_token;
+          }
+        }
+
+        // Update session with final role
+        (req.user as any).role = finalRole;
+      } catch (postLoginErr) {
+        console.error('[Auth] Post-login role update failed:', postLoginErr);
+        // Non-fatal — proceed with login
       }
 
       req.session.save((saveErr) => {
@@ -65,27 +109,61 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
           return next(saveErr);
         }
 
-        console.log('[Auth] Login successful — redirecting to /dashboard');
-        return res.redirect('/dashboard');
+        // Role-based redirect
+        const role = (req.user as any)?.role || 'client';
+        const redirectTo = ['admin', 'owner', 'case_manager', 'support'].includes(role)
+          ? '/admin'
+          : '/dashboard';
+
+        console.log('[Auth] Login successful — role:', role, '— redirecting to', redirectTo);
+        return res.redirect(redirectTo);
       });
     });
   })(req, res, next);
 });
 
+// ─── Magic link token access ──────────────────────────────────────────────
+router.get('/access/:token', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token } = req.params;
+    console.log('[Auth] Magic link access attempt:', token?.substring(0, 8) + '...');
+
+    const result = await pool.query(
+      `SELECT u.*, COALESCE(s.role, u.role, 'client') as resolved_role
+       FROM users u
+       LEFT JOIN staff s ON u.discord_id = s.discord_id
+       WHERE u.portal_token = $1`,
+      [token]
+    );
+
+    if (result.rows.length === 0) {
+      console.warn('[Auth] Invalid portal token');
+      return res.redirect('/?error=invalid_token');
+    }
+
+    const user = { ...result.rows[0], role: result.rows[0].resolved_role };
+    console.log('[Auth] Magic link login for user:', user.discord_username);
+
+    req.login(user, (err) => {
+      if (err) return next(err);
+      req.session.save((saveErr) => {
+        if (saveErr) return next(saveErr);
+        res.redirect('/dashboard');
+      });
+    });
+  } catch (err) {
+    console.error('[Auth] Magic link error:', err);
+    next(err);
+  }
+});
+
 // ─── Logout ──────────────────────────────────────────────────────────────
 router.get('/logout', (req: Request, res: Response, next: NextFunction) => {
-  const discordId = (req.user as any)?.discord_id;
-  console.log('[Auth] Logout request from:', discordId || 'unauthenticated');
-
+  console.log('[Auth] Logout request from:', (req.user as any)?.discord_id || 'unauthenticated');
   req.logout((err) => {
-    if (err) {
-      console.error('[Auth] Logout error:', err);
-      return next(err);
-    }
+    if (err) return next(err);
     req.session.destroy((destroyErr) => {
-      if (destroyErr) {
-        console.error('[Auth] Session destroy error:', destroyErr);
-      }
+      if (destroyErr) console.error('[Auth] Session destroy error:', destroyErr);
       res.clearCookie('connect.sid');
       res.redirect('/');
     });
@@ -97,7 +175,6 @@ router.get('/me', (req: Request, res: Response) => {
   if (!req.isAuthenticated() || !req.user) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-
   const user = req.user as any;
   res.json({
     id: user.id,
@@ -107,46 +184,14 @@ router.get('/me', (req: Request, res: Response) => {
     email: user.email,
     role: user.role || 'client',
     portal_token: user.portal_token,
+    plan: user.plan,
+    plan_start: user.plan_start,
+    plan_expiry: user.plan_expiry,
     created_at: user.created_at,
   });
 });
 
-// ─── Portal token access (alternative login) ─────────────────────────────
-router.get('/access/:token', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { token } = req.params;
-    console.log('[Auth] Portal token access attempt:', token?.substring(0, 8) + '...');
-
-    const result = await pool.query(
-      `SELECT u.*, COALESCE(s.role, 'client') as role
-       FROM users u
-       LEFT JOIN staff s ON u.discord_id = s.discord_id
-       WHERE u.portal_token = $1`,
-      [token]
-    );
-
-    if (result.rows.length === 0) {
-      console.warn('[Auth] Invalid portal token');
-      return res.status(404).json({ error: 'Invalid access token' });
-    }
-
-    const user = result.rows[0];
-    console.log('[Auth] Token login for user:', user.discord_username);
-
-    req.login(user, (err) => {
-      if (err) return next(err);
-      req.session.save((saveErr) => {
-        if (saveErr) return next(saveErr);
-        res.redirect('/dashboard');
-      });
-    });
-  } catch (err) {
-    console.error('[Auth] Portal token access error:', err);
-    next(err);
-  }
-});
-
-// ─── Auth status (debug helper) ──────────────────────────────────────────
+// ─── Auth status (debug) ─────────────────────────────────────────────────
 router.get('/status', (req: Request, res: Response) => {
   res.json({
     authenticated: req.isAuthenticated(),
