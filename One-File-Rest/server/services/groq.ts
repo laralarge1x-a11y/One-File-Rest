@@ -74,7 +74,7 @@ export async function groqText(options: GroqTextOptions): Promise<string> {
 
 /**
  * Analyze images using Groq vision API
- * Uses llama-3.2-90b-vision-preview model for image analysis
+ * Uses meta-llama/llama-4-scout-17b-16e-instruct model for image analysis
  */
 export async function groqVision(options: GroqVisionOptions): Promise<string> {
   if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
@@ -87,7 +87,7 @@ export async function groqVision(options: GroqVisionOptions): Promise<string> {
 
   try {
     const response = await groq.chat.completions.create({
-      model: 'llama-3.2-90b-vision-preview',
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       messages: [
         {
           role: 'user',

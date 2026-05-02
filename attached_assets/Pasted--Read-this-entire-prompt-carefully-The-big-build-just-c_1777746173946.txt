@@ -1,0 +1,236 @@
+
+
+Read this entire prompt carefully. The big build just completed. Now we need to verify every single piece actually works, fix all broken parts, and fill any gaps. Do everything below.
+
+---
+
+### STEP 1 — CHECK SERVER LOGS RIGHT NOW
+
+Run the server and show me the full console output. Look for:
+- Any TypeScript compilation errors
+- Any `Cannot find module` errors
+- Any missing import errors
+- Any database connection errors
+- Any route registration errors
+
+Fix every single error you see before moving on.
+
+---
+
+### STEP 2 — VERIFY EVERY FILE EXISTS
+
+Check that ALL of these files exist and are not empty:
+
+**Server routes:**
+- `server/routes/auth.ts` — has magic link, admin detection, role redirect
+- `server/routes/admin.ts` — has all 30+ endpoints
+- `server/routes/ai.ts` — has all 7 AI endpoints including analyze-image
+- `server/routes/cases.ts` — has webhook fires after every write
+- `server/routes/messages.ts` — has webhook fires after every write
+- `server/routes/evidence.ts` — has webhook fires after upload
+- `server/routes/broadcast.ts` — sends to Discord webhooks
+- `server/routes/bot-bridge.ts` — all bot bridge endpoints
+
+**Services:**
+- `server/services/webhook.ts` — has `fireWebhook()` function with all embed types
+- `server/services/groq.ts` — supports vision model `meta-llama/llama-4-scout-17b-16e-instruct`
+- `server/socket-store.ts` — shared socket instance
+
+**Bot:**
+- `bot/index.ts` — has `/giveaccess`, `/revokeaccess`, `/casestatus` slash commands and `messageCreate` listener
+
+**Frontend admin pages:**
+- `client/src/pages/admin/AdminDashboard.tsx`
+- `client/src/pages/admin/CaseManagement.tsx`
+- `client/src/pages/admin/ClientList.tsx`
+- `client/src/pages/admin/ClientProfile.tsx`
+- `client/src/pages/admin/Analytics.tsx`
+- `client/src/pages/admin/StaffManagement.tsx`
+- `client/src/pages/admin/BulkBroadcast.tsx`
+- `client/src/pages/admin/TemplateBuilder.tsx`
+- `client/src/pages/admin/AdminSettings.tsx`
+- `client/src/pages/admin/AITools.tsx`
+
+**For any file that is missing or empty — create it fully right now.**
+
+---
+
+### STEP 3 — VERIFY APP.TSX ROUTES
+
+Open `client/src/App.tsx` and confirm ALL these routes are registered:
+
+```
+/admin → AdminDashboard
+/admin/cases → CaseManagement
+/admin/clients → ClientList
+/admin/clients/:id → ClientProfile
+/admin/analytics → Analytics
+/admin/staff → StaffManagement
+/admin/broadcast → BulkBroadcast
+/admin/templates → TemplateBuilder
+/admin/settings → AdminSettings
+/admin/ai → AITools
+```
+
+Every admin route must be wrapped in an auth guard that checks `/api/auth/me` — if the user's role is not `admin` or `staff`, redirect to `/`. If any routes are missing, add them now.
+
+---
+
+### STEP 4 — FIX THE GROQ VISION ENDPOINT
+
+Open `server/routes/ai.ts` and find the `analyze-image` endpoint. Make sure it:
+
+1. Accepts `base64` image data and `mimeType` in the request body
+2. Calls Groq using model `meta-llama/llama-4-scout-17b-16e-instruct`
+3. Passes the image correctly as a vision message like this:
+```typescript
+const response = await groq.chat.completions.create({
+  model: "meta-llama/llama-4-scout-17b-16e-instruct",
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${base64Data}`
+          }
+        },
+        {
+          type: "text",
+          text: "You are a TikTok policy expert. Analyze this image. Identify: 1) What violation is shown if any, 2) Severity (Low/Medium/High/Critical), 3) Which TikTok policy section applies, 4) Recommended appeal strategy, 5) Likelihood of successful appeal. Be specific and detailed."
+        }
+      ]
+    }
+  ],
+  max_tokens: 1000
+});
+```
+4. Returns structured JSON with fields: `detected`, `severity`, `policy_section`, `recommendation`, `appeal_likelihood`
+
+If this is wrong or missing, rewrite the entire endpoint correctly now.
+
+---
+
+### STEP 5 — FIX THE DISCORD BOT
+
+Open `bot/index.ts` and verify these specific things:
+
+**`/giveaccess` command must:**
+- NOT create any channel
+- Get `interaction.channelId` as the customer's channel — this is the channel the command was run in
+- Check if a webhook named `Portal Updates` already exists in that channel before creating a new one — use `channel.fetchWebhooks()` to check
+- Save everything to DB via bot bridge POST `/bot/users/sync`
+- Post the welcome embed IN THE CURRENT CHANNEL (not a DM) with ALL plan features listed accurately:
+  - Basic Guard: $79/month, 1 violation/month, 48-72h response, custom appeal writing, 1-on-1 standard support, basic violation analysis, appeal status tracking, optional express upgrade
+  - Fortnightly Defense: $159/2 weeks, up to 3 violations per 2 weeks, under 12h response, full-service appeal handling, direct expert chat, advanced violation analysis + prevention tips, escalation support, faster platform follow-ups, priority over Basic users
+  - ProShield Creator: $259/month, up to 5 violations/month, top queue priority, end-to-end case management, direct 1-on-1 expert fast replies, advanced appeal frameworks + proven templates, weekly account audits and risk checks, personalized prevention strategy, creator growth and compliance guidance, unlimited support and follow-ups, highest escalation priority
+- Reply ephemerally to the admin
+
+**`/revokeaccess` command must:**
+- NOT delete or touch the channel
+- Post a red embed in the customer's stored `discord_channel_id` saying access is revoked
+- Update DB to set plan = null, plan_expiry = null
+- Reply ephemerally to admin
+
+**`messageCreate` listener must:**
+- Ignore messages from bots
+- Check if the message's channel ID exists in the `users` table as `discord_channel_id`
+- If yes, POST to `/bot/messages/receive` with the Discord message content and the user's discord_id
+- This makes messages from Discord appear on the portal in real time
+
+**Fix anything that is wrong or missing in the bot.**
+
+---
+
+### STEP 6 — VERIFY WEBHOOK SERVICE
+
+Open `server/services/webhook.ts` and confirm:
+
+1. The `fireWebhook(userId, eventType, data)` function exists
+2. It does a database lookup: `SELECT discord_webhook_url FROM users WHERE id = $1`
+3. It uses `fetch()` to POST to that webhook URL with a Discord embed payload
+4. It logs to `webhook_logs` table with success/failure and error message
+5. It NEVER throws — everything is wrapped in try/catch
+6. All these event types have their own embed: `case_created`, `message_from_client`, `staff_reply`, `status_changed`, `evidence_uploaded`, `case_resolved`
+
+If anything is wrong or missing, fix it now.
+
+---
+
+### STEP 7 — VERIFY AUTH FLOW
+
+Open `server/routes/auth.ts` and confirm the `/auth/callback` route:
+
+1. Has full try/catch
+2. Exchanges the Discord code for a token correctly
+3. Fetches Discord user from `https://discord.com/api/users/@me`
+4. Upserts into `users` table with correct columns
+5. Generates `portal_token` if user doesn't have one using `crypto.randomUUID()`
+6. Checks `ADMIN_DISCORD_IDS` env var — if user's discord_id is in the list, sets `role = 'admin'`
+7. Saves session with `req.session.save()`
+8. Redirects: admin → `/admin`, staff → `/admin`, client → `/dashboard`
+
+Also confirm `GET /auth/access/:token` exists and works as a magic login link.
+
+If anything is wrong, fix it now.
+
+---
+
+### STEP 8 — VERIFY DATABASE MIGRATIONS RUN ON STARTUP
+
+Open `server/index.ts` and confirm there is a `runMigrations()` function that runs BEFORE `app.listen()` and executes ALL of these with `IF NOT EXISTS`:
+
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT`
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_start DATE`
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expiry DATE`
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_channel_id TEXT`
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_webhook_url TEXT`
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS portal_token UUID DEFAULT gen_random_uuid()`
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'client'`
+- `CREATE TABLE IF NOT EXISTS webhook_logs (...)`
+- `CREATE TABLE IF NOT EXISTS access_grants (...)`
+- `CREATE TABLE IF NOT EXISTS staff_assignments (...)`
+- `CREATE TABLE IF NOT EXISTS internal_notes (...)`
+- `CREATE TABLE IF NOT EXISTS audit_log (...)`
+
+If `runMigrations()` is missing or incomplete, add it fully now.
+
+---
+
+### STEP 9 — ADMIN SIDEBAR COMPONENT
+
+Open `client/src/pages/admin/AdminDashboard.tsx` or wherever the admin sidebar is defined. Make sure there is a shared `AdminSidebar` component that:
+
+- Is used on EVERY admin page (not duplicated code — one component imported everywhere)
+- Has navigation links to all 10 admin sections
+- Shows the logged-in user's Discord avatar and username at the bottom
+- Has a green dot "System Online" indicator
+- Is fixed to the left side, dark `#0F0F0F` background, `#5865F2` accent color
+- The active route is highlighted
+
+If this component does not exist as a shared component, create `client/src/components/AdminSidebar.tsx` and import it into every admin page.
+
+---
+
+### STEP 10 — FINAL CHECKS
+
+1. Make sure `recharts` is installed in the client — check `client/package.json`, if missing run `cd One-File-Rest/client && npm install recharts`
+2. Make sure `discord.js` is installed in the bot — check `bot/package.json` or root `package.json`, if missing install it
+3. Make sure `GROQ_API_KEY` is being read correctly in the Groq service
+4. Make sure every admin API route in `server/routes/admin.ts` has an auth middleware check that verifies `req.session.userId` and that the user's role is `admin` or `staff`
+5. Make sure the bot bridge routes in `server/routes/bot-bridge.ts` check for `Authorization: Bearer {BOT_BRIDGE_TOKEN}` header on every request
+
+---
+
+### STEP 11 — RESTART AND CONFIRM
+
+After fixing everything:
+1. Restart the server — confirm it starts with zero errors
+2. Show the full startup logs
+3. Confirm all routes are registered by looking for the route registration console output
+4. Tell me exactly what the bot needs to start (which command to run and which env vars must be set in Replit Secrets)
+
+---
+
+**DO NOT skip any step. DO NOT leave any stub functions. Every endpoint must have real implementation. Every frontend page must render real data from the API.**

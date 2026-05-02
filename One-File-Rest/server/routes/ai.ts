@@ -126,39 +126,57 @@ Return ONLY valid JSON, no explanation.`,
 // ─── Analyze Image ────────────────────────────────────────────────────────
 router.post('/analyze-image', async (req: Request, res: Response) => {
   try {
-    const { image_base64, image_url, case_id } = req.body;
-    if (!image_base64 && !image_url) return res.status(400).json({ error: 'image_base64 or image_url required' });
+    const { base64, mimeType, image_base64, image_url, case_id } = req.body;
+    const b64 = base64 || image_base64;
+    const mt = mimeType || 'image/jpeg';
 
-    const imageSource = image_url || `data:image/jpeg;base64,${image_base64}`;
+    if (!b64 && !image_url) {
+      return res.status(400).json({ error: 'base64 (with mimeType) or image_url required' });
+    }
+
+    const imageSource = image_url || `data:${mt};base64,${b64}`;
 
     const result = await groqVision({
       imageUrl: imageSource,
-      question: `You are a TikTok policy expert analyzing a violation notice or account screenshot.
+      question: `You are a TikTok Shop policy expert analyzing a violation notice, ban screen, or account screenshot.
 
-Analyze this image and provide a JSON response with:
+Analyze this image and respond with ONLY a JSON object using these exact keys:
 {
-  "detected_content": "description of what you see",
-  "violation_type": "specific violation category",
+  "detected": "concise description of what you see in the image",
   "severity": "Low|Medium|High|Critical",
-  "policy_violated": "TikTok policy section name",
-  "recommended_action": "specific recommended next step",
-  "appeal_angle": "best argument for appeal",
-  "confidence": 1-10
+  "policy_section": "specific TikTok policy section name (e.g. Community Guidelines §4.2, Shop Misconduct, IP Infringement)",
+  "recommendation": "specific next step the creator should take",
+  "appeal_likelihood": "percentage estimate (e.g. 75%) of appeal success"
 }
-Return ONLY valid JSON.`,
+Return ONLY valid JSON, no commentary.`,
       maxTokens: 1000,
     });
 
-    let analysis;
+    let parsed: any = {};
     try {
       const jsonMatch = result.match(/\{[\s\S]*\}/);
-      analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: result };
-    } catch { analysis = { raw: result }; }
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    } catch { /* fall through */ }
 
-    if (case_id && analysis.violation_type) {
+    // Always return the five contract keys, defaulting to null when missing.
+    const analysis = {
+      detected: parsed.detected ?? parsed.detected_content ?? null,
+      severity: parsed.severity ?? null,
+      policy_section: parsed.policy_section ?? parsed.policy_violated ?? null,
+      recommendation: parsed.recommendation ?? parsed.recommended_action ?? null,
+      appeal_likelihood: parsed.appeal_likelihood ?? parsed.appeal_angle ?? null,
+    };
+
+    if (case_id && (analysis.detected || analysis.severity)) {
       try {
         await pool.query(
-          `UPDATE evidence SET ai_analysis = $1 WHERE case_id = $2 AND ai_analysis IS NULL LIMIT 1`,
+          `UPDATE evidence SET ai_analysis = $1
+           WHERE id = (
+             SELECT id FROM evidence
+             WHERE case_id = $2 AND ai_analysis IS NULL
+             ORDER BY uploaded_at DESC
+             LIMIT 1
+           )`,
           [JSON.stringify(analysis), case_id]
         );
       } catch (dbErr) { console.warn('Could not save analysis to evidence:', dbErr); }
