@@ -14,8 +14,6 @@ import { discordStrategy } from './auth/discord.js';
 import {
   requireAuth,
   requireStaff,
-  requireCaseManager,
-  requireOwner,
 } from './auth/middleware.js';
 
 // Routes
@@ -34,6 +32,23 @@ import complianceRoutes from './routes/compliance.js';
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
 
+// ─── Environment validation ────────────────────────────────────────────────
+const REQUIRED_ENV = ['SESSION_SECRET', 'DATABASE_URL'];
+const OPTIONAL_WARN = ['DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET', 'DISCORD_REDIRECT_URI'];
+
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`❌ MISSING REQUIRED ENV VAR: ${key} — server cannot start`);
+    process.exit(1);
+  }
+}
+for (const key of OPTIONAL_WARN) {
+  if (!process.env[key]) {
+    console.warn(`⚠️  Missing optional env var: ${key} (Discord OAuth will be unavailable)`);
+  }
+}
+
+// ─── App setup ────────────────────────────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
@@ -42,15 +57,23 @@ const io = new SocketServer(httpServer, {
 });
 setIO(io);
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Trust Replit's reverse proxy so secure cookies work in production
+app.set('trust proxy', 1);
 
+// Body parsing
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ─── Session ──────────────────────────────────────────────────────────────
 const PgSession = pgSession(session);
 app.use(
   session({
-    store: new PgSession({ pool }),
-    secret: process.env.SESSION_SECRET || 'dev-secret',
+    store: new PgSession({
+      pool,
+      createTableIfMissing: true, // auto-create the "session" table if it doesn't exist
+      tableName: 'session',
+    }),
+    secret: process.env.SESSION_SECRET!,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -62,22 +85,32 @@ app.use(
   })
 );
 
+// ─── Passport ─────────────────────────────────────────────────────────────
 if (discordStrategy) {
   passport.use(discordStrategy);
+  console.log('✓ Discord OAuth strategy registered');
+} else {
+  console.warn('⚠️  Discord OAuth strategy not registered — login will be unavailable');
 }
+
 passport.serializeUser((user: any, done) => {
+  console.log(`[Auth] Serializing user: discord_id=${user.discord_id}`);
   done(null, user.discord_id);
 });
+
 passport.deserializeUser(async (discord_id: string, done) => {
   try {
     const result = await pool.query(
-      `SELECT u.*, s.role FROM users u
+      `SELECT u.*, COALESCE(s.role, 'client') as role
+       FROM users u
        LEFT JOIN staff s ON u.discord_id = s.discord_id
        WHERE u.discord_id = $1`,
       [discord_id]
     );
-    done(null, result.rows[0] || null);
+    const user = result.rows[0] || null;
+    done(null, user);
   } catch (err) {
+    console.error('[Auth] deserializeUser error:', err);
     done(err);
   }
 });
@@ -85,7 +118,7 @@ passport.deserializeUser(async (discord_id: string, done) => {
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Routes
+// ─── Routes ───────────────────────────────────────────────────────────────
 app.use('/auth', authRoutes);
 app.use('/api/cases', requireAuth, casesRoutes);
 app.use('/api/messages', requireAuth, messagesRoutes);
@@ -100,14 +133,18 @@ app.use('/api/compliance', requireAuth, complianceRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'ok',
+    env: process.env.NODE_ENV,
+    discord_oauth: !!(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET),
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Socket.io
+// ─── Socket.io ────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  const userId = (socket.handshake.auth as any).userId;
+  const userId = (socket.handshake.auth as any)?.userId;
 
-  // Client emits 'case:join' / 'case:leave' with { caseId } objects
   socket.on('case:join', (data: { caseId: number } | number) => {
     const caseId = typeof data === 'object' ? data.caseId : data;
     socket.join(`case:${caseId}`);
@@ -118,7 +155,6 @@ io.on('connection', (socket) => {
     socket.leave(`case:${caseId}`);
   });
 
-  // Legacy / alternative event names kept for compatibility
   socket.on('join:user', (discordId: string) => {
     socket.join(`user:${discordId}`);
   });
@@ -135,72 +171,79 @@ io.on('connection', (socket) => {
     socket.join('policy_alerts');
   });
 
-  // Handle message:send from client socket
-  socket.on('message:send', async (data: { caseId: number; content: string; type: string }) => {
+  socket.on('message:send', async (data: { caseId: number; content: string; type?: string }) => {
     try {
       const { caseId, content } = data;
       if (!userId || !content || !caseId) return;
-
       const result = await pool.query(
         `INSERT INTO messages (case_id, sender_discord_id, sender_type, content)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
-        [caseId, userId, 'client', content]
+         VALUES ($1, $2, 'client', $3) RETURNING *`,
+        [caseId, userId, content]
       );
-
-      // Broadcast to all users in this case room
       io.to(`case:${caseId}`).emit('message:new', result.rows[0]);
     } catch (err) {
-      console.error('Error handling message:send socket event:', err);
+      console.error('[Socket] message:send error:', err);
     }
   });
 
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
+    // silent — avoid log spam in production
   });
 });
 
-// Serve built frontend in production (registered after all API routes)
+// ─── Static frontend (production only) ────────────────────────────────────
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
-  app.use(express.static(clientDist));
+  app.use(express.static(clientDist, { maxAge: '1h' }));
   app.use((_req, res) => {
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
 
-// Startup
+// ─── Global error handler (must be last) ─────────────────────────────────
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('[UNHANDLED ERROR]', {
+    method: req.method,
+    url: req.url,
+    message: err?.message,
+    stack: err?.stack,
+  });
+  res.status(err?.status || 500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err?.message,
+  });
+});
+
+// ─── Startup ──────────────────────────────────────────────────────────────
 async function start() {
   try {
-    // Run migrations
     console.log('Running database migrations...');
-    const schema = await import('fs').then((fs) =>
-      fs.promises.readFile(path.join(__dirname, 'db', 'schema.sql'), 'utf-8')
-    );
+    const schemaPath = path.join(__dirname, 'db', 'schema.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf-8');
     await pool.query(schema);
     console.log('✓ Database schema migrated');
 
-    // Seed staff if needed
+    // Seed owner staff rows from environment
     const ownerIds = (process.env.OWNER_DISCORD_IDS || '').split(',').filter(Boolean);
     for (const ownerId of ownerIds) {
       await pool.query(
         `INSERT INTO staff (discord_id, name, role, active)
-         VALUES ($1, $2, $3, $4)
+         VALUES ($1, $2, 'owner', true)
          ON CONFLICT (discord_id) DO NOTHING`,
-        [ownerId.trim(), 'Owner', 'owner', true]
+        [ownerId.trim(), 'Owner']
       );
     }
     console.log('✓ Staff seeded');
 
-    // Start deadline monitor
     startDeadlineMonitor(io);
     console.log('✓ Deadline monitor started');
 
-    const PORT = process.env.NODE_ENV === 'production' ? 5000 : (process.env.PORT || 3000);
+    const PORT = process.env.NODE_ENV === 'production' ? 5000 : (Number(process.env.PORT) || 3000);
     httpServer.listen(PORT, () => {
-      console.log(`✓ Elite Tok Club Portal running on port ${PORT}`);
+      console.log(`✓ Elite Tok Club Portal running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
     });
   } catch (err) {
-    console.error('Failed to start server:', err);
+    console.error('❌ Failed to start server:', err);
     process.exit(1);
   }
 }

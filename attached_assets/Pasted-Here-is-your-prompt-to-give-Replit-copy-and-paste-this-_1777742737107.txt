@@ -1,0 +1,94 @@
+Here is your prompt to give Replit — copy and paste this exactly:
+
+---
+
+**PROMPT FOR REPLIT:**
+
+We have a critical bug: after Discord OAuth authorization, the callback URL (`/auth/callback?code=...`) returns **"Internal Server Error"** instead of logging the user in and redirecting to the dashboard. Fix this and audit every related piece. Here is everything you need to do:
+
+---
+
+**1. FIX THE DISCORD OAuth CALLBACK (`server/routes/auth.ts`)**
+
+The `/auth/callback` route is crashing with an Internal Server Error. Debug and fix ALL of the following common causes:
+
+- The route is not wrapping its logic in a try/catch — add full try/catch and return a proper error response instead of crashing
+- Check that `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, and `DISCORD_REDIRECT_URI` environment variables are actually set and being read correctly — if any are undefined the token exchange will fail silently or throw
+- The redirect URI used in the token exchange request must exactly match what is registered in the Discord Developer Portal — make sure it is using `process.env.DISCORD_REDIRECT_URI` and not a hardcoded value
+- After exchanging the code for a token, the route fetches the Discord user — make sure it is hitting `https://discord.com/api/users/@me` with the correct `Authorization: Bearer <token>` header
+- After getting the user from Discord, the route must upsert into your `users` table — check the SQL columns match the actual schema (`id`, `discord_id`, `username`, `avatar`, `role`, etc.) — a column mismatch here causes a crash
+- After the upsert, the route must set the session correctly (`req.session.userId = user.id`) and then redirect to the frontend (`/`) — make sure `req.session.save()` is called before the redirect if using express-session, otherwise the session won't persist
+- Log every step with `console.log` so we can see exactly where it fails in the Replit console
+
+---
+
+**2. FIX SESSION CONFIGURATION (`server/index.ts`)**
+
+- Make sure `express-session` is configured with a real `secret` from environment variable `SESSION_SECRET`
+- Make sure `resave: false` and `saveUninitialized: false` are set
+- Make sure the session middleware is registered BEFORE the routes
+- Make sure `cookie.secure` is set based on environment: `secure: process.env.NODE_ENV === 'production'` — if this is forced to `true` in development it breaks session saving
+- Make sure `cookie.sameSite` is set to `'lax'` so it works with OAuth redirects
+
+---
+
+**3. CHECK THE DATABASE `users` TABLE**
+
+- Open `schema.sql` and verify the `users` table has all these columns: `id` (serial primary key), `discord_id` (text unique), `username` (text), `avatar` (text), `role` (text default `'client'`), `created_at` (timestamp default now())
+- If any column is missing, add it via an ALTER TABLE migration or update the schema and re-run it
+- Make sure the upsert query in auth.ts uses `ON CONFLICT (discord_id) DO UPDATE` correctly
+
+---
+
+**4. ADD ENVIRONMENT VARIABLE VALIDATION ON STARTUP**
+
+At the top of `server/index.ts`, add a startup check:
+
+```
+const required = ['DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET', 'DISCORD_REDIRECT_URI', 'SESSION_SECRET', 'DATABASE_URL'];
+for (const key of required) {
+  if (!process.env[key]) {
+    console.error(`MISSING ENV VAR: ${key}`);
+    process.exit(1);
+  }
+}
+```
+
+This will tell us immediately in the Replit console if any secret is missing.
+
+---
+
+**5. FIX THE `/auth/me` ENDPOINT**
+
+- Make sure `/auth/me` reads `req.session.userId`, queries the `users` table by that id, and returns the user object
+- If no session, return `401` — this is already expected behavior but make sure it doesn't crash
+
+---
+
+**6. ADD A GLOBAL ERROR HANDLER TO `server/index.ts`**
+
+At the very bottom of index.ts, after all routes, add:
+
+```
+app.use((err, req, res, next) => {
+  console.error('UNHANDLED ERROR:', err);
+  res.status(500).json({ error: 'Internal Server Error', message: err.message });
+});
+```
+
+This will catch any unhandled errors across all routes and return JSON instead of crashing — so we always see what went wrong.
+
+---
+
+**7. VERIFY REPLIT SECRETS ARE SET**
+
+In the Replit Secrets tab, make sure ALL of these are set:
+- `DISCORD_CLIENT_ID`
+- `DISCORD_CLIENT_SECRET`
+- `DISCORD_REDIRECT_URI` — must be exactly `https://one-file-rest.replit.app/auth/callback`
+- `SESSION_SECRET` — any long random string
+- `DATABASE_URL` — your Postgres connection string
+
+---
+
+After making all these fixes, restart the server, try Discord login again, and share the Replit console logs so we can see the full output.
