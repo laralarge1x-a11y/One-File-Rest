@@ -1,0 +1,291 @@
+Good. The server is clean. Now here is your next prompt for Replit — this covers everything still missing or untested:
+
+---
+
+## REPLIT PROMPT — FULL END-TO-END TEST AND COMPLETE REMAINING GAPS
+
+Read every word. Test everything live, fix every issue found, and complete every missing piece.
+
+---
+
+### STEP 1 — SET MISSING ENV VARS AND VERIFY STARTUP
+
+First, confirm these are in Replit Secrets and being read correctly at startup. Print a startup checklist in the server console like this:
+
+```
+✅ DATABASE_URL — set
+✅ SESSION_SECRET — set
+✅ DISCORD_CLIENT_ID — set
+✅ DISCORD_CLIENT_SECRET — set
+✅ DISCORD_REDIRECT_URI — set
+✅ GROQ_API_KEY — set
+⚠️ ADMIN_DISCORD_IDS — NOT SET (admin auto-detection will not work)
+⚠️ BOT_BRIDGE_TOKEN — NOT SET (bot bridge will reject all bot requests)
+⚠️ DISCORD_BOT_TOKEN — NOT SET (Discord bot cannot start)
+⚠️ DISCORD_GUILD_ID — NOT SET (slash commands cannot register)
+```
+
+Never crash on missing optional vars — just warn. Only crash on `DATABASE_URL`, `SESSION_SECRET`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`.
+
+---
+
+### STEP 2 — TEST AND FIX THE DISCORD OAUTH CALLBACK
+
+Simulate the full auth flow by checking every line of `server/routes/auth.ts`:
+
+1. Confirm the `/auth/callback` route does the Discord token exchange using `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI` — all from env vars, nothing hardcoded
+2. Confirm it fetches `https://discord.com/api/users/@me` with `Authorization: Bearer {access_token}`
+3. Confirm the upsert SQL uses `ON CONFLICT (discord_id) DO UPDATE` and sets `username`, `avatar`, `portal_token` (generate with `crypto.randomUUID()` if null)
+4. Confirm admin detection reads `ADMIN_DISCORD_IDS`, splits by comma, trims spaces, and if the discord_id matches sets `role = 'admin'` in the DB
+5. Confirm `req.session.userId` is set and `req.session.save()` is called with a callback before redirecting
+6. Confirm redirect goes to `/admin` for admin/staff, `/dashboard` for client
+7. Add `console.log` at every step so we can trace exactly where it fails if something goes wrong
+
+---
+
+### STEP 3 — TEST ALL ADMIN API ENDPOINTS
+
+For each endpoint below, confirm it exists in the server, has real database logic (no stubs returning `{}`), has auth middleware checking role is admin or staff, and has try/catch. Fix any that are stubbed or broken:
+
+```
+GET  /api/admin/stats              → real counts from DB
+GET  /api/admin/activity           → last 20 from audit_log
+GET  /api/admin/alerts             → cases with deadline within 72h
+GET  /api/admin/cases              → all cases with client info joined
+GET  /api/admin/cases/:id          → single case with all details
+GET  /api/admin/clients            → all users with plan info
+GET  /api/admin/clients/:id        → single client full profile
+GET  /api/admin/clients/:id/portal-link  → returns magic link URL
+POST /api/admin/clients/:id/regenerate-token → new portal_token
+POST /api/admin/clients/:id/revoke → sets plan null
+POST /api/admin/clients/:id/message → sends via bot bridge to their channel
+POST /api/admin/notes              → inserts into internal_notes
+GET  /api/admin/notes/:caseId      → gets notes for case
+POST /api/admin/assign             → inserts into staff_assignments
+GET  /api/admin/staff              → all users with role admin or staff
+POST /api/admin/staff              → upserts user as staff
+DELETE /api/admin/staff/:id        → sets role back to client
+GET  /api/admin/webhook-logs       → last 100 from webhook_logs
+POST /api/admin/test-webhook       → fires test embed to provided URL
+GET  /api/admin/export/cases       → returns CSV string of all cases
+GET  /api/admin/system-stats       → table row counts + uptime
+GET  /api/admin/env-status         → which env vars are set (true/false only)
+POST /api/admin/weekly-report      → Groq generates summary of week activity
+```
+
+For any endpoint returning `{}` or throwing errors — implement it fully right now.
+
+---
+
+### STEP 4 — TEST ALL AI ENDPOINTS
+
+For each AI endpoint, confirm it calls Groq correctly and returns the right shape. Fix any that are broken:
+
+**POST `/api/ai/analyze-image`**
+- Accepts `{ base64, mimeType }`
+- Calls Groq with model `meta-llama/llama-4-scout-17b-16e-instruct` with vision message
+- Always returns exactly: `{ analysis: { detected, severity, policy_section, recommendation, appeal_likelihood } }`
+- If Groq response cannot be parsed as JSON, still return those 5 keys with safe defaults
+
+**POST `/api/ai/generate-appeal`**
+- Accepts case details object
+- System prompt: "You are an expert TikTok appeal writer with 5 years experience recovering accounts. Write professional, persuasive appeal letters."
+- Returns `{ letter: "..." }`
+
+**POST `/api/ai/case-summary`**
+- Accepts full case object with messages
+- Returns `{ summary: "..." }` — concise 3-5 sentence summary of the case
+
+**POST `/api/ai/analyze-violation`**
+- Accepts `{ violationType, description, platform }`
+- Returns `{ severity, likely_outcome, strategy, timeline, success_probability }`
+
+**POST `/api/ai/bulk-analyze`**
+- Accepts `{ cases: [...] }` array
+- Returns `{ ranked: [{ caseId, priority, action, estimated_days }] }`
+
+**POST `/api/ai/policy-explainer`**
+- Accepts `{ policy_text }`
+- Returns `{ explanation, affected_behaviors, recommendations }`
+
+**POST `/api/ai/enhance-template`**
+- Accepts `{ template_text }`
+- Returns `{ enhanced: "..." }`
+
+---
+
+### STEP 5 — TEST WEBHOOK SERVICE
+
+Open `server/services/webhook.ts` and run a live test:
+
+1. Add a test route `POST /api/admin/test-webhook` that accepts `{ webhook_url }` and fires a test embed to it
+2. The embed should look like:
+```json
+{
+  "embeds": [{
+    "title": "🧪 Test Webhook — TikTok Recovery Portal",
+    "description": "This is a test message from your portal. Webhooks are working correctly.",
+    "color": 5765119,
+    "fields": [
+      { "name": "Status", "value": "✅ Connected", "inline": true },
+      { "name": "Time", "value": "current ISO timestamp", "inline": true }
+    ],
+    "footer": { "text": "TikTok Recovery Portal" }
+  }]
+}
+```
+3. Return `{ success: true }` or `{ success: false, error: "..." }` based on whether Discord accepted it
+
+Also verify `fireWebhook()` is called (non-blocking) in:
+- `cases.ts` after INSERT → event type `case_created`
+- `cases.ts` after status UPDATE → event type `status_changed`
+- `messages.ts` after INSERT — if sender is staff → `staff_reply`, if sender is client → `message_from_client`
+- `evidence.ts` after upload → `evidence_uploaded`
+
+If any of these calls are missing, add them now.
+
+---
+
+### STEP 6 — TEST THE ADMIN PANEL FRONTEND
+
+Open each admin page and confirm it loads data from the real API. Fix any page that shows blank, crashes, or uses hardcoded data:
+
+**AdminDashboard** — must show real numbers from `/api/admin/stats`, real activity from `/api/admin/activity`, real alerts from `/api/admin/alerts`
+
+**CaseManagement** — must load cases from `/api/admin/cases`, slide-out panel must open with real case data, status change buttons must call the API and update immediately, AI buttons must call the correct endpoints and show streaming or loading state
+
+**ClientList** — must load from `/api/admin/clients`, plan expiry coloring must work (green/orange/red), CSV export button must work
+
+**ClientProfile** — must load from `/api/admin/clients/:id`, all 4 tabs must work, portal link copy must work, regenerate token must call the API
+
+**Analytics** — all 5 recharts must render with real data, not hardcoded arrays
+
+**StaffManagement** — must load from `/api/admin/staff`, add staff modal must work
+
+**BulkBroadcast** — live Discord embed preview must update as you type, send must call `/api/broadcast` which fires webhooks to all matching users
+
+**TemplateBuilder** — must load from `/api/templates`, create/edit/delete must work
+
+**AITools** — all 4 tabs must work end to end. Image upload tab must convert to base64 and call `/api/ai/analyze-image`. Results must display in the 5-field structured format.
+
+**AdminSettings** — env status section must call `/api/admin/env-status` and show real ✅/❌ for each var
+
+---
+
+### STEP 7 — VERIFY ADMIN SIDEBAR IS SHARED
+
+Confirm `client/src/components/AdminSidebar.tsx` exists as ONE shared component and is imported into ALL 10 admin pages. It must:
+
+- Show all 10 nav links with correct icons
+- Highlight the currently active route using `useLocation()` from react-router-dom
+- Show logged-in user's Discord avatar and username at the bottom (from `/api/auth/me`)
+- Have the green "System Online" dot
+- Be fixed left side, `#0F0F0F` background, `#5865F2` accent
+
+If any admin page has its own copy of the sidebar instead of importing the shared component, replace it with the import.
+
+---
+
+### STEP 8 — FIX THE BOT
+
+Open `bot/index.ts` and fix these specific things:
+
+1. The `/giveaccess` command — before creating a webhook, call `channel.fetchWebhooks()` and check if one named `Portal Updates` already exists. If yes, use that one. If no, create it. This prevents duplicate webhooks on the same channel.
+
+2. The welcome embed posted in the channel must include ALL plan features listed accurately. Hard-code the plan features as a constant object at the top of the file:
+
+```typescript
+const PLAN_FEATURES = {
+  basic_guard: {
+    name: "Basic Guard Plan",
+    price: "$79/month",
+    response_time: "48–72 hours",
+    violations: "1 violation/month",
+    features: [
+      "Custom appeal writing",
+      "1-on-1 support (standard)",
+      "Basic violation analysis",
+      "Appeal status tracking",
+      "Optional express upgrade"
+    ]
+  },
+  fortnightly_defense: {
+    name: "Fortnightly Defense Plan",
+    price: "$159 / 2 weeks",
+    response_time: "Under 12 hours",
+    violations: "Up to 3 violations per 2 weeks",
+    features: [
+      "Full-service appeal handling",
+      "Direct expert chat",
+      "Advanced violation analysis + prevention tips",
+      "Escalation support",
+      "Faster follow-ups with platform",
+      "Priority over Basic users"
+    ]
+  },
+  proshield_creator: {
+    name: "ProShield Creator Plan",
+    price: "$259/month",
+    response_time: "Top queue priority",
+    violations: "Up to 5 violations/month",
+    features: [
+      "End-to-end case management",
+      "Direct 1-on-1 expert access (fast replies)",
+      "Advanced appeal frameworks + proven templates",
+      "Weekly account audits & risk checks",
+      "Personalized prevention strategy",
+      "Creator growth + compliance guidance",
+      "Unlimited support & follow-ups",
+      "Highest escalation priority"
+    ]
+  }
+}
+```
+
+Use this constant to build the welcome embed — never hardcode plan details anywhere else.
+
+3. The `messageCreate` listener — confirm it ignores bot messages with `if (message.author.bot) return`, checks if `message.channelId` matches any `discord_channel_id` in the DB (via bot bridge `GET /bot/users/by-channel/:channelId`), and if found POSTs to `/bot/messages/receive`.
+
+4. Add a bot bridge endpoint on the server: `GET /bot/users/by-channel/:channelId` — returns the user whose `discord_channel_id` matches. The bot needs this to know which user a Discord message belongs to.
+
+---
+
+### STEP 9 — AUDIT LOG WRITES
+
+Confirm `audit_log` is written to for every significant action. Add inserts wherever missing:
+
+```sql
+INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details)
+VALUES ($1, $2, $3, $4, $5)
+```
+
+Must be written on:
+- Case created → action: `case_created`, target_type: `case`
+- Case status changed → action: `case_status_changed`
+- Message sent → action: `message_sent`
+- Evidence uploaded → action: `evidence_uploaded`
+- Plan granted → action: `plan_granted`, target_type: `user`
+- Plan revoked → action: `plan_revoked`
+- Staff assigned to case → action: `staff_assigned`
+- Internal note added → action: `note_added`
+- Broadcast sent → action: `broadcast_sent`
+- Admin logged in → action: `admin_login`
+
+These audit logs power the live activity feed on the admin dashboard. If they are not being written, the activity feed will always be empty.
+
+---
+
+### STEP 10 — FINAL RESTART AND FULL REPORT
+
+After fixing everything:
+
+1. Restart the server
+2. Show full startup console output
+3. List every registered route (GET/POST/DELETE with path)
+4. Confirm database migrations ran successfully
+5. Confirm no TypeScript errors
+6. Tell me exactly what commands to run to start the bot and what secrets need to be added to Replit for the bot to work
+
+---
+
+**Do not skip anything. Do not leave stubs. Every endpoint must have real database queries. Every frontend page must call real APIs. Fix everything you find.**
