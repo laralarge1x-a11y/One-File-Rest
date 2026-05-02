@@ -115,14 +115,10 @@ export default function Login() {
             <span>CLUB</span>
           </div>
         </div>
-        <button type="button" className="etc-help">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M9.1 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
-          <span>Need help?</span>
-        </button>
+        <div className="etc-header-status">
+          <span className="etc-status-dot" />
+          <span>Live support</span>
+        </div>
       </motion.header>
 
       {/* ============ MAIN GRID ============ */}
@@ -396,20 +392,17 @@ const styles = `
   }
   .etc-brand-text span:last-child { color: rgba(255,255,255,0.5); font-weight: 700; }
 
-  .etc-help {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 9px 14px;
+  .etc-header-status {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 8px 14px 8px 12px;
     border-radius: 100px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(34,197,94,0.08);
+    border: 1px solid rgba(34,197,94,0.25);
     color: rgba(255,255,255,0.85);
-    font-family: inherit; font-size: 13px; font-weight: 500;
-    cursor: pointer;
+    font-size: 12.5px; font-weight: 500;
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    transition: background 200ms ease, border-color 200ms ease, transform 200ms ease;
   }
-  .etc-help:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18); }
 
   /* ============ MAIN ============ */
   .etc-main {
@@ -727,10 +720,10 @@ const styles = `
     .etc-brand { gap: 10px; }
     .etc-brand-logo-wrap { width: 36px; height: 36px; border-radius: 10px; }
     .etc-brand-text { font-size: 11px; letter-spacing: 1px; }
-    .etc-help {
-      padding: 8px 12px;
-      font-size: 12px;
-      border-radius: 100px;
+    .etc-header-status {
+      padding: 6px 11px 6px 9px;
+      font-size: 11.5px;
+      gap: 7px;
     }
 
     .etc-main { gap: 24px; max-width: 440px; }
@@ -795,8 +788,6 @@ const styles = `
 
   @media (max-width: 400px) {
     .etc-headline { font-size: 32px; letter-spacing: -0.7px; }
-    .etc-help { padding: 8px 10px; }
-    .etc-help span { display: none; }
     .etc-card { padding: 22px 18px 18px; }
     .etc-discord-orb { width: 72px; height: 72px; }
   }
