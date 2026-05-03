@@ -7,6 +7,7 @@ const navItems = [
   { to: '/admin/cases', label: 'Cases', icon: '📋' },
   { to: '/admin/clients', label: 'Clients', icon: '👥' },
   { to: '/admin/ai', label: 'AI Tools', icon: '🤖' },
+  { to: '#ask-elite', label: 'Ask Elite (⌘J)', icon: '✨', isAction: true },
   { to: '/admin/analytics', label: 'Analytics', icon: '📊' },
   { to: '/admin/staff', label: 'Staff', icon: '👨‍💼' },
   { to: '/admin/broadcast', label: 'Broadcast', icon: '📢' },
@@ -41,24 +42,50 @@ export default function AdminSidebar() {
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: '8px', overflowY: 'auto' }}>
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.exact}
-            style={({ isActive }) => ({
-              display: 'flex', alignItems: 'center', gap: '10px',
-              padding: '9px 12px', borderRadius: '8px', marginBottom: '2px',
-              textDecoration: 'none', fontSize: '13px', fontWeight: '500',
-              transition: 'all 0.15s',
-              background: isActive ? '#5865F2' : 'transparent',
-              color: isActive ? '#fff' : '#888',
-            })}
-          >
-            <span style={{ fontSize: '15px', width: '20px', textAlign: 'center' }}>{item.icon}</span>
-            {item.label}
-          </NavLink>
-        ))}
+        {navItems.map((item) => {
+          if ((item as any).isAction) {
+            // Synthesise the Cmd/Ctrl+J keypress so the global handler in
+            // AskElitePanel handles open + focus consistently.
+            const trigger = () => {
+              const isMac = /Mac/.test(navigator.platform);
+              const ev = new KeyboardEvent('keydown', { key: 'j', metaKey: isMac, ctrlKey: !isMac, bubbles: true });
+              window.dispatchEvent(ev);
+            };
+            return (
+              <button
+                key={item.to}
+                onClick={trigger}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
+                  padding: '9px 12px', borderRadius: '8px', marginBottom: '2px',
+                  border: 'none', cursor: 'pointer', textAlign: 'left',
+                  background: 'linear-gradient(135deg, rgba(88,101,242,0.15), rgba(235,69,158,0.15))',
+                  color: '#e7e7ea', fontSize: '13px', fontWeight: 600,
+                }}>
+                <span style={{ fontSize: '15px', width: '20px', textAlign: 'center' }}>{item.icon}</span>
+                {item.label}
+              </button>
+            );
+          }
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.exact}
+              style={({ isActive }) => ({
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '9px 12px', borderRadius: '8px', marginBottom: '2px',
+                textDecoration: 'none', fontSize: '13px', fontWeight: '500',
+                transition: 'all 0.15s',
+                background: isActive ? '#5865F2' : 'transparent',
+                color: isActive ? '#fff' : '#888',
+              })}
+            >
+              <span style={{ fontSize: '15px', width: '20px', textAlign: 'center' }}>{item.icon}</span>
+              {item.label}
+            </NavLink>
+          );
+        })}
       </nav>
 
       {/* Bottom — user + system status */}

@@ -138,3 +138,58 @@ broadcasts `presence:update {discordId, online}` to the `admin` room. Used in
   (and `admin` if staff). `case:join` is gated by `canAccessCase`. The
   legacy client-supplied `join:user` event is **ignored** — clients cannot
   join arbitrary user rooms.
+
+## Task #9 — Omniscient AI Assistant ("Ask Elite")
+
+Read-only, staff-only AI assistant with full visibility into the entire portal
+(cases, messages, evidence, KB, audit log, Discord transcripts, templates,
+policy alerts, staff roster). Cannot mutate anything; refuses write requests
+and offers deep links instead.
+
+### Architecture
+- `server/ai/types.ts` — `Source`, `ToolDef`, `ToolResult`, SSE `StreamEvent`.
+- `server/ai/system-prompt.ts` — assistant persona + citation rules.
+- `server/ai/tools.ts` — 15 read-only tools: `searchCases`, `getCase`,
+  `searchPortalMessages`, `searchDiscord`, `getDiscordTranscript`,
+  `searchClients`, `getClient`, `searchKB`, `getKBArticle`, `searchTemplates`,
+  `searchAuditLog`, `getDeadlines`, `searchPolicyAlerts`, `listStaff`,
+  `analyzeImage`. Every tool returns `{data, sources[]}` for citations.
+- `server/ai/orchestrator.ts` — agent loop (max 6 steps), per-thread token
+  cap (`AI_PER_THREAD_TOKEN_CAP`, default 120k) + per-staffer daily cap
+  (`AI_PER_STAFFER_DAILY_CAP`, default 500k). Logs every query to
+  `ai_query_log`.
+- `server/services/groq.ts::groqTool()` — tool-calling chat completion using
+  `llama-3.3-70b-versatile`.
+
+### HTTP surface (all behind `requireStaff`)
+- `POST /api/ai/ask` — SSE stream (events: thread, step, tool_result,
+  sources, token, done, error).
+- `GET/DELETE /api/ai/threads[/:id]` — thread CRUD.
+- `GET /api/ai/dossier/:caseId` — one-shot AI brief on a case.
+- `GET /api/ai/usage` — today's token spend + caps + tool count.
+
+### Discord surface
+- `/ask <question>` — slash command running the orchestrator.
+- `/dossier case_id:N` — slash command for case briefs.
+- `@bot <question>` — mention handler in any guild channel.
+- All replies include a "Sources" embed with up to 8 deep-linked citations.
+- Bot also live-indexes every guild message into `discord_messages` so the
+  orchestrator can query transcripts (soft-deletes on MessageDelete).
+
+### Tables added
+- `discord_messages` — indexed mirror of guild messages (soft delete).
+- `ai_threads`, `ai_messages` — chat history per staffer.
+- `ai_query_log` — per-query telemetry for cost guardrails.
+
+### Frontend
+- `client/src/components/ai/AskElitePanel.tsx` — fixed-right slide-in panel,
+  global Cmd/Ctrl+J hotkey, SSE consumer (fetch + ReadableStream), citation
+  chips, slash-command hints (`/case`, `/client`, `/deadline`, `/policy`,
+  `/dossier`), thread history.
+- Mounted in every `AdminLayout` (App.tsx) so it's available on every admin
+  route. Sidebar gets an "Ask Elite (⌘J)" trigger button.
+
+### Cost guardrails
+Cap defaults via env: `AI_PER_THREAD_TOKEN_CAP=120000`,
+`AI_PER_STAFFER_DAILY_CAP=500000`. The orchestrator refuses with a clear
+message when caps are reached.

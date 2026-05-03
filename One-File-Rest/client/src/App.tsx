@@ -10,6 +10,7 @@ import SharedFileSheet from './components/admin/SharedFileSheet';
 
 // Layout
 import AdminSidebar from './components/layout/AdminSidebar';
+import AskElitePanel from './components/ai/AskElitePanel';
 import { CustomerNav, BottomNav, ToastProvider, PageTransition, LoadingSpinner } from './components/customer';
 
 // Client Pages
@@ -59,6 +60,7 @@ const AdminLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
       {children}
     </div>
+    <AskElitePanel />
   </div>
 );
 

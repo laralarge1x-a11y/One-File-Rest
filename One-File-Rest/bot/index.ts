@@ -166,6 +166,19 @@ const commands = [
     .setDescription('View all cases for a user')
     .addUserOption((opt) => opt.setName('user').setDescription('The Discord user').setRequired(true))
     .toJSON(),
+
+  // ─── Ask Elite (omniscient AI) ──────────────────────────────────────────
+  new SlashCommandBuilder()
+    .setName('ask')
+    .setDescription('Ask Elite — staff-only AI assistant with full portal + Discord visibility')
+    .addStringOption((opt) => opt.setName('question').setDescription('Your question').setRequired(true))
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('dossier')
+    .setDescription('AI brief on a case (staff only)')
+    .addIntegerOption((opt) => opt.setName('case_id').setDescription('Case ID').setRequired(true))
+    .toJSON(),
 ];
 
 // ─── Register slash commands ──────────────────────────────────────────────
@@ -551,6 +564,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'giveaccess': await handleGiveAccess(interaction); break;
         case 'revokeaccess': await handleRevokeAccess(interaction); break;
         case 'casestatus': await handleCaseStatus(interaction); break;
+        case 'ask': await handleAsk(interaction); break;
+        case 'dossier': await handleDossier(interaction); break;
       }
       return;
     }
@@ -572,27 +587,195 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-// Discord → Portal message mirroring
+// ─── Ask Elite handlers (slash + @mention) ────────────────────────────────
+function chunkMessage(s: string, max = 1900): string[] {
+  if (s.length <= max) return [s];
+  const out: string[] = [];
+  let rest = s;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('\n', max);
+    if (cut < max * 0.6) cut = max;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+function buildSourcesEmbed(sources: Array<{ type: string; id: any; label: string; url?: string }>) {
+  if (!sources || sources.length === 0) return null;
+  const top = sources.slice(0, 8);
+  const lines = top.map((s, i) => `\`#${i + 1}\` ${s.url ? `[${s.label}](${s.url})` : s.label}`);
+  return new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('📚  Sources')
+    .setDescription(lines.join('\n'))
+    .setFooter({ text: sources.length > 8 ? `+ ${sources.length - 8} more` : 'Ask Elite' });
+}
+
+async function runAsk(question: string, staffDiscordId: string, contextHint?: any) {
+  return await callBridge<{ answer: string; sources: any[]; thread_id: number; tools: string[] }>(
+    'POST', '/bot/ai/ask',
+    { staff_discord_id: staffDiscordId, question, context_hint: contextHint }
+  );
+}
+
+// Channel-confidentiality guard. Ask Elite answers can contain other clients'
+// data, internal notes, audit detail — they must never be posted in channels
+// that include non-staff. Default: ephemeral (only the asker sees it). The
+// AI_STAFF_CHANNEL_IDS env var lets owners opt-in specific staff-only
+// channels (e.g. internal #ops) to public mode.
+const AI_STAFF_CHANNELS = new Set(
+  (process.env.AI_STAFF_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)
+);
+function isStaffOnlyChannel(channelId: string | null | undefined): boolean {
+  return !!channelId && AI_STAFF_CHANNELS.has(channelId);
+}
+
+async function handleAsk(interaction: ChatInputCommandInteraction) {
+  const question = interaction.options.getString('question', true);
+  const ephemeral = !isStaffOnlyChannel(interaction.channelId);
+  await interaction.deferReply({ ephemeral });
+  try {
+    const result = await runAsk(question, interaction.user.id);
+    const chunks = chunkMessage(result.answer);
+    await interaction.editReply({ content: chunks[0] });
+    for (let i = 1; i < chunks.length; i++) {
+      await interaction.followUp({ content: chunks[i], ephemeral });
+    }
+    const srcEmbed = buildSourcesEmbed(result.sources || []);
+    if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral });
+  } catch (err: any) {
+    const msg = err?.message || 'failed';
+    const friendly = /not_staff/i.test(msg)
+      ? '🔒 Ask Elite is staff-only. If you should have access, ping an owner to add you to the staff table.'
+      : `❌ Ask Elite error: ${msg.slice(0, 300)}`;
+    await interaction.editReply({ content: friendly });
+  }
+}
+
+async function handleDossier(interaction: ChatInputCommandInteraction) {
+  const caseId = interaction.options.getInteger('case_id', true);
+  const ephemeral = !isStaffOnlyChannel(interaction.channelId);
+  await interaction.deferReply({ ephemeral });
+  try {
+    const result = await runAsk(
+      `Build an executive dossier for case #${caseId}. Cover client, violation, current stage, deadline risk, evidence completeness, what they said in portal vs Discord, recommended next step. Under 250 words.`,
+      interaction.user.id,
+      { case_id: caseId }
+    );
+    const chunks = chunkMessage(result.answer);
+    await interaction.editReply({ content: `**📄  Dossier · Case #${caseId}**\n\n${chunks[0]}` });
+    for (let i = 1; i < chunks.length; i++) await interaction.followUp({ content: chunks[i], ephemeral });
+    const srcEmbed = buildSourcesEmbed(result.sources || []);
+    if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral });
+  } catch (err: any) {
+    const msg = err?.message || 'failed';
+    const friendly = /not_staff/i.test(msg)
+      ? '🔒 Staff only.'
+      : `❌ Dossier error: ${msg.slice(0, 300)}`;
+    await interaction.editReply({ content: friendly });
+  }
+}
+
+// ─── Discord → Portal message mirroring + AI indexing ─────────────────────
+// We only index channels that are useful to Ask Elite:
+//   1) tracked private customer channels (channelUserMap)
+//   2) channels explicitly opted-in via AI_STAFF_CHANNEL_IDS
+// This keeps a busy guild's general/voice/announcements out of the index
+// and bounds DB growth to roughly (active customers + opted-in channels).
+function shouldIndex(channelId: string): boolean {
+  if (channelUserMap.has(channelId)) return true;
+  if (AI_STAFF_CHANNELS.has(channelId)) return true;
+  return false;
+}
+
+async function indexDiscordMessage(message: Message) {
+  if (!message.guildId || !message.channelId) return;
+  if (!shouldIndex(message.channelId)) return;
+  try {
+    await callBridge('POST', '/bot/discord-messages/ingest', {
+      id: message.id,
+      channel_id: message.channelId,
+      guild_id: message.guildId,
+      author_discord_id: message.author.id,
+      author_username: message.author.username,
+      is_bot: message.author.bot,
+      content: message.content || '',
+      attachments: Array.from(message.attachments.values()).map((a) => ({
+        url: a.url, name: a.name, type: a.contentType || 'unknown',
+      })),
+      embeds: message.embeds.map((e) => ({ title: e.title, description: e.description })),
+      referenced_message_id: message.reference?.messageId || null,
+      created_at: message.createdAt.toISOString(),
+      edited_at: message.editedAt?.toISOString() || null,
+    });
+  } catch (err) {
+    // Indexing failures are non-fatal; the orchestrator will just have a
+    // slightly older view of the channel.
+    console.warn('[Bot] Index failed for message', message.id, (err as Error).message);
+  }
+}
+
 client.on(Events.MessageCreate, async (message: Message) => {
-  if (message.author.bot) return;
   if (!message.channelId) return;
 
-  const discordUserId = channelUserMap.get(message.channelId);
-  if (!discordUserId) return; // Not a tracked customer channel
+  // 1) Always index (silent) — never index DMs.
+  indexDiscordMessage(message).catch(() => {});
 
-  // Only mirror messages from the channel owner (not admins)
+  // 2) @mention → Ask Elite. To prevent leaking other clients' data into a
+  // mixed-audience channel, we ONLY answer in:
+  //   • a channel explicitly listed in AI_STAFF_CHANNEL_IDS, OR
+  //   • a DM to the bot (no guildId)
+  // In any other channel we nudge the asker to use the slash command (which
+  // replies ephemerally) or DM the bot.
+  if (!message.author.bot && client.user && message.mentions.has(client.user.id)) {
+    const cleaned = message.content
+      .replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '')
+      .trim();
+    if (cleaned.length > 1) {
+      const isDM = !message.guildId;
+      const isStaffChan = isStaffOnlyChannel(message.channelId);
+      if (!isDM && !isStaffChan) {
+        try {
+          await message.reply({ content: '🔒 To protect client confidentiality, I only answer @mentions in staff-only channels or DMs. Use `/ask` here for an ephemeral reply, or DM me directly.' });
+        } catch {}
+        return;
+      }
+      try { await message.channel.sendTyping(); } catch {}
+      try {
+        const result = await runAsk(cleaned, message.author.id);
+        const chunks = chunkMessage(result.answer);
+        await message.reply({ content: chunks[0] });
+        for (let i = 1; i < chunks.length; i++) {
+          if ('send' in message.channel) await (message.channel as any).send({ content: chunks[i] });
+        }
+        const srcEmbed = buildSourcesEmbed(result.sources || []);
+        if (srcEmbed && 'send' in message.channel) await (message.channel as any).send({ embeds: [srcEmbed] });
+      } catch (err: any) {
+        const msg = err?.message || 'failed';
+        const friendly = /not_staff/i.test(msg)
+          ? '🔒 Ask Elite is staff-only.'
+          : `❌ ${msg.slice(0, 300)}`;
+        try { await message.reply({ content: friendly }); } catch {}
+      }
+      return;
+    }
+  }
+
+  // 3) Existing portal mirroring (unchanged) — only client → portal
+  if (message.author.bot) return;
+  const discordUserId = channelUserMap.get(message.channelId);
+  if (!discordUserId) return;
   if (message.author.id !== discordUserId) return;
 
   try {
-    // Find the latest open case for this user to attach the message to
     const cases = await callBridge<any[]>('GET', `/bot/cases?discord_id=${discordUserId}`);
     const openCase = cases.find((c) => !['won', 'denied', 'closed'].includes(c.status));
     if (!openCase) return;
 
     const attachments = message.attachments.map((att) => ({
-      url: att.url,
-      name: att.name,
-      type: att.contentType || 'unknown',
+      url: att.url, name: att.name, type: att.contentType || 'unknown',
     }));
 
     await callBridge('POST', '/bot/messages/receive', {
@@ -606,6 +789,18 @@ client.on(Events.MessageCreate, async (message: Message) => {
   } catch (err) {
     console.error('[Bot] Message mirror error:', err);
   }
+});
+
+client.on(Events.MessageUpdate, async (_old, msg) => {
+  if (msg.partial) { try { await msg.fetch(); } catch { return; } }
+  if ((msg as Message).guildId) indexDiscordMessage(msg as Message).catch(() => {});
+});
+
+client.on(Events.MessageDelete, async (msg) => {
+  if (!msg.id) return;
+  try {
+    await callBridge('POST', '/bot/discord-messages/delete', { id: msg.id });
+  } catch {}
 });
 
 client.on(Events.Error, (err) => {

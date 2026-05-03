@@ -219,4 +219,108 @@ router.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ─── Ask Elite (Discord surface) ──────────────────────────────────────────
+// The bot calls this when a staffer pings @bot or runs /ask. We resolve the
+// caller's role from the staff table and refuse non-staff. Returns the final
+// answer + sources from the orchestrator (non-streaming).
+import { orchestrateOnce } from '../ai/orchestrator.js';
+
+// STRICT: only active staff or env-listed admins may use Ask Elite. We do
+// NOT trust users.role as a fallback because role rows can become stale on
+// deprovisioning while users.role is left behind.
+async function resolveStaff(discordId: string): Promise<{ role: string } | null> {
+  const r = (await pool.query(
+    `SELECT role FROM staff WHERE discord_id = $1 AND active = true LIMIT 1`,
+    [discordId]
+  )).rows[0];
+  if (r) return { role: r.role };
+  const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (adminIds.includes(discordId)) return { role: 'admin' };
+  return null;
+}
+
+router.post('/ai/ask', async (req: Request, res: Response) => {
+  try {
+    const { staff_discord_id, question, thread_id, context_hint } = req.body || {};
+    if (!staff_discord_id || !question) {
+      return res.status(400).json({ error: 'staff_discord_id + question required' });
+    }
+    const staff = await resolveStaff(staff_discord_id);
+    if (!staff) return res.status(403).json({ error: 'not_staff' });
+    const result = await orchestrateOnce({
+      question: String(question).trim(),
+      threadId: thread_id ? Number(thread_id) : undefined,
+      surface: 'discord',
+      staffDiscordId: staff_discord_id,
+      staffRole: staff.role,
+      contextHint: context_hint || undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    console.error('[bot/ai/ask] failed', err);
+    res.status(500).json({ error: err?.message || 'ask failed' });
+  }
+});
+
+// ─── Discord message indexing (live + backfill) ───────────────────────────
+// Upserts into discord_messages so the orchestrator's searchDiscord /
+// getDiscordTranscript tools can read transcripts. The bot calls this from
+// messageCreate / messageUpdate. Soft-deletes via deleted_at.
+router.post('/discord-messages/ingest', async (req: Request, res: Response) => {
+  try {
+    const m = req.body || {};
+    if (!m.id || !m.channel_id || !m.author_discord_id) {
+      return res.status(400).json({ error: 'id, channel_id, author_discord_id required' });
+    }
+    await pool.query(
+      `INSERT INTO discord_messages
+         (id, channel_id, guild_id, author_discord_id, author_username, is_bot,
+          content, attachments, embeds, referenced_message_id, created_at, edited_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (id) DO UPDATE SET
+         content = EXCLUDED.content,
+         attachments = EXCLUDED.attachments,
+         embeds = EXCLUDED.embeds,
+         edited_at = COALESCE(EXCLUDED.edited_at, discord_messages.edited_at),
+         deleted_at = NULL`,
+      [
+        BigInt(m.id), m.channel_id, m.guild_id || null,
+        m.author_discord_id, m.author_username || null, !!m.is_bot,
+        m.content || '', JSON.stringify(m.attachments || []), JSON.stringify(m.embeds || []),
+        m.referenced_message_id ? BigInt(m.referenced_message_id) : null,
+        m.created_at ? new Date(m.created_at) : new Date(),
+        m.edited_at ? new Date(m.edited_at) : null,
+      ]
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('[discord-messages/ingest] failed', err);
+    res.status(500).json({ error: err?.message || 'ingest failed' });
+  }
+});
+
+router.post('/discord-messages/delete', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'id required' });
+    await pool.query(`UPDATE discord_messages SET deleted_at = NOW() WHERE id = $1`, [BigInt(id)]);
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'delete failed' });
+  }
+});
+
+// Returns the most recent indexed message timestamp per channel so the bot's
+// backfill knows where to resume.
+router.get('/discord-messages/checkpoints', async (_req: Request, res: Response) => {
+  try {
+    const rows = (await pool.query(
+      `SELECT channel_id, MAX(created_at) AS last_indexed FROM discord_messages GROUP BY channel_id`
+    )).rows;
+    res.json({ checkpoints: rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'failed' });
+  }
+});
+
 export default router;

@@ -189,6 +189,80 @@ export async function groqFast(options: GroqTextOptions): Promise<string> {
   }
 }
 
+// ─── Tool calling (used by the omniscient "Ask Elite" assistant) ──────────
+export interface GroqToolDef {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, any>;
+  };
+}
+
+export interface GroqToolMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
+}
+
+export interface GroqToolResponse {
+  content: string;
+  tool_calls: Array<{
+    id: string;
+    name: string;
+    args: any;
+  }>;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+/**
+ * Tool-calling chat completion. Returns either a final text answer OR a list
+ * of tool calls the model wants executed. Model: llama-3.3-70b-versatile.
+ */
+export async function groqTool(opts: {
+  messages: GroqToolMessage[];
+  tools?: GroqToolDef[];
+  temperature?: number;
+  maxTokens?: number;
+  toolChoice?: 'auto' | 'none' | 'required';
+}): Promise<GroqToolResponse> {
+  if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
+  const { messages, tools, temperature = 0.3, maxTokens = 2048, toolChoice = 'auto' } = opts;
+  try {
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: messages as any,
+      tools: tools as any,
+      tool_choice: tools && tools.length > 0 ? (toolChoice as any) : undefined,
+      temperature,
+      max_tokens: maxTokens,
+    });
+    const choice = response.choices[0];
+    const msg: any = choice?.message || {};
+    const calls = (msg.tool_calls || []).map((tc: any) => {
+      let args: any = {};
+      try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+      return { id: tc.id, name: tc.function?.name, args };
+    });
+    return {
+      content: msg.content || '',
+      tool_calls: calls,
+      tokens_in: response.usage?.prompt_tokens || 0,
+      tokens_out: response.usage?.completion_tokens || 0,
+    };
+  } catch (err) {
+    console.error('Groq tool API error:', err);
+    throw new Error(`Failed to call Groq with tools: ${err instanceof Error ? err.message : 'Unknown error'}`);
+  }
+}
+
 /**
  * Batch process multiple requests with rate limiting
  */

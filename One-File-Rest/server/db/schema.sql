@@ -434,3 +434,70 @@ CREATE TABLE IF NOT EXISTS device_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_discord_id);
 
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Task #9: Omniscient AI Assistant ("Ask Elite")
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Indexed mirror of Discord channel messages for retrieval & dossier building.
+-- Live-maintained by the bot via messageCreate/Update/Delete; backfilled on
+-- demand. Read-only from the orchestrator's perspective.
+CREATE TABLE IF NOT EXISTS discord_messages (
+  id BIGINT PRIMARY KEY,                    -- Discord snowflake
+  channel_id VARCHAR(20) NOT NULL,
+  guild_id VARCHAR(20),
+  author_discord_id VARCHAR(20) NOT NULL,
+  author_username VARCHAR(100),
+  is_bot BOOLEAN DEFAULT false,
+  content TEXT,
+  attachments JSONB DEFAULT '[]',
+  embeds JSONB DEFAULT '[]',
+  referenced_message_id BIGINT,
+  created_at TIMESTAMPTZ NOT NULL,
+  edited_at TIMESTAMPTZ,
+  deleted_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_discord_messages_channel ON discord_messages(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discord_messages_author ON discord_messages(author_discord_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discord_messages_content_trgm ON discord_messages USING gin (to_tsvector('english', coalesce(content, '')));
+
+-- Conversation threads ("Ask Elite" sessions)
+CREATE TABLE IF NOT EXISTS ai_threads (
+  id SERIAL PRIMARY KEY,
+  owner_discord_id VARCHAR(20) NOT NULL,
+  title VARCHAR(200),
+  surface VARCHAR(20) NOT NULL DEFAULT 'web' CHECK (surface IN ('web', 'discord')),
+  total_tokens INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_threads_owner ON ai_threads(owner_discord_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id SERIAL PRIMARY KEY,
+  thread_id INTEGER REFERENCES ai_threads(id) ON DELETE CASCADE,
+  role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
+  content TEXT NOT NULL,
+  sources JSONB DEFAULT '[]',
+  tool_calls JSONB DEFAULT '[]',
+  tokens_in INTEGER DEFAULT 0,
+  tokens_out INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_thread ON ai_messages(thread_id, created_at);
+
+-- Per-query telemetry for cost guardrails + audit
+CREATE TABLE IF NOT EXISTS ai_query_log (
+  id SERIAL PRIMARY KEY,
+  thread_id INTEGER REFERENCES ai_threads(id) ON DELETE SET NULL,
+  staff_discord_id VARCHAR(20) NOT NULL,
+  surface VARCHAR(20) NOT NULL,
+  question TEXT NOT NULL,
+  tools_called TEXT[],
+  tokens_in INTEGER DEFAULT 0,
+  tokens_out INTEGER DEFAULT 0,
+  duration_ms INTEGER,
+  error TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_query_log_staff ON ai_query_log(staff_discord_id, created_at DESC);
