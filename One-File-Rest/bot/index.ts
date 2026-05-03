@@ -657,6 +657,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleCustomerButton(interaction);
       return;
     }
+    if (interaction.isButton() && interaction.customId.startsWith('ask_post:')) {
+      await handleAskPostPublic(interaction);
+      return;
+    }
   } catch (err) {
     console.error('[Bot] Unhandled interaction error:', err);
     if (interaction.isRepliable()) {
@@ -695,6 +699,47 @@ function buildSourcesEmbed(sources: Array<{ type: string; id: any; label: string
     .setFooter({ text: sources.length > 8 ? `+ ${sources.length - 8} more` : 'Ask Elite' });
 }
 
+// In-memory store for /ask responses awaiting "Post publicly" confirmation.
+// Keyed by `${interactionId}:${userId}`. Auto-evicted after 10 minutes so
+// stale answers can't be posted hours later. Confidentiality requirement.
+const pendingPosts = new Map<string, { answer: string; sources: Array<{ type: string; id: unknown; label: string; url?: string }>; channelId: string; expiresAt: number }>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of pendingPosts.entries()) {
+    if (v.expiresAt < now) pendingPosts.delete(k);
+  }
+}, 60_000);
+
+async function handleAskPostPublic(interaction: ButtonInteraction) {
+  const parts = interaction.customId.split(':');
+  const ownerId = parts[1];
+  const interactionId = parts[2];
+  if (!ownerId || !interactionId) {
+    await interaction.reply({ content: '❌ Invalid action.', ephemeral: true });
+    return;
+  }
+  if (interaction.user.id !== ownerId) {
+    await interaction.reply({ content: '❌ Only the staffer who ran /ask can post their own answer.', ephemeral: true });
+    return;
+  }
+  const pending = pendingPosts.get(`${interactionId}:${ownerId}`);
+  if (!pending) {
+    await interaction.reply({ content: '⌛ This Ask Elite answer is no longer available to post (expired or already posted).', ephemeral: true });
+    return;
+  }
+  pendingPosts.delete(`${interactionId}:${ownerId}`);
+  await interaction.deferReply({ ephemeral: false });
+  const chunks = chunkMessage(`**🤖  Ask Elite · posted by <@${ownerId}>**\n\n${pending.answer}`);
+  await interaction.editReply({ content: chunks[0] });
+  for (let i = 1; i < chunks.length; i++) {
+    await interaction.followUp({ content: chunks[i] });
+  }
+  const srcEmbed = buildSourcesEmbed(pending.sources);
+  if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed] });
+  // Strip the button from the original ephemeral reply so it can't be re-used.
+  await interaction.message.edit({ components: [] }).catch(() => {});
+}
+
 async function runAsk(question: string, staffDiscordId: string, contextHint?: any) {
   return await callBridge<{ answer: string; sources: any[]; thread_id: number; tools: string[] }>(
     'POST', '/bot/ai/ask',
@@ -716,17 +761,34 @@ function isStaffOnlyChannel(channelId: string | null | undefined): boolean {
 
 async function handleAsk(interaction: ChatInputCommandInteraction) {
   const question = interaction.options.getString('question', true);
-  const ephemeral = !isStaffOnlyChannel(interaction.channelId);
-  await interaction.deferReply({ ephemeral });
+  // Always ephemeral by default — staff confirms publishing via the
+  // "Post publicly" button on the response itself. Even in opt-in
+  // staff-only channels the default stays ephemeral so the asker
+  // confirms intent every time.
+  await interaction.deferReply({ ephemeral: true });
   try {
     const result = await runAsk(question, interaction.user.id);
     const chunks = chunkMessage(result.answer);
-    await interaction.editReply({ content: chunks[0] });
+    const postBtn = new ButtonBuilder()
+      .setCustomId(`ask_post:${interaction.user.id}`)
+      .setLabel('Post publicly')
+      .setStyle(ButtonStyle.Secondary);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(postBtn);
+    await interaction.editReply({ content: chunks[0], components: [row] });
     for (let i = 1; i < chunks.length; i++) {
-      await interaction.followUp({ content: chunks[i], ephemeral });
+      await interaction.followUp({ content: chunks[i], ephemeral: true });
     }
     const srcEmbed = buildSourcesEmbed(result.sources || []);
-    if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral });
+    if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral: true });
+    pendingPosts.set(`${interaction.id}:${interaction.user.id}`, {
+      answer: result.answer,
+      sources: result.sources || [],
+      channelId: interaction.channelId || '',
+      expiresAt: Date.now() + 10 * 60_000,
+    });
+    const updatedBtn = ButtonBuilder.from(postBtn).setCustomId(`ask_post:${interaction.user.id}:${interaction.id}`);
+    const updatedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(updatedBtn);
+    await interaction.editReply({ content: chunks[0], components: [updatedRow] }).catch(() => {});
   } catch (err: any) {
     const msg = err?.message || 'failed';
     const friendly = /not_staff/i.test(msg)

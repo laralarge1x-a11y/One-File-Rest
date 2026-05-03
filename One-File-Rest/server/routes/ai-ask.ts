@@ -92,11 +92,16 @@ router.post('/ask', async (req: Request, res: Response) => {
 // ─── GET /threads ─────────────────────────────────────────────────────────
 router.get('/threads', async (req: Request, res: Response) => {
   try {
+    const me = req.user!.discord_id;
     const rows = (await pool.query(
-      `SELECT id, title, surface, total_tokens, created_at, updated_at,
+      `SELECT id, title, surface, total_tokens, owner_discord_id, shared_with, created_at, updated_at,
+              (owner_discord_id = $1) AS is_owner,
               (SELECT COUNT(*) FROM ai_messages m WHERE m.thread_id = t.id)::int AS message_count
-         FROM ai_threads t WHERE owner_discord_id = $1 ORDER BY updated_at DESC LIMIT 50`,
-      [req.user!.discord_id]
+         FROM ai_threads t
+         WHERE owner_discord_id = $1
+            OR $1 = ANY(COALESCE(shared_with, ARRAY[]::text[]))
+         ORDER BY updated_at DESC LIMIT 50`,
+      [me]
     )).rows;
     res.json({ threads: rows });
   } catch (err: any) {
@@ -108,9 +113,12 @@ router.get('/threads', async (req: Request, res: Response) => {
 router.get('/threads/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
+    const me = req.user!.discord_id;
     const t = (await pool.query(
-      `SELECT * FROM ai_threads WHERE id = $1 AND owner_discord_id = $2`,
-      [id, req.user!.discord_id]
+      `SELECT * FROM ai_threads
+         WHERE id = $1
+           AND (owner_discord_id = $2 OR $2 = ANY(COALESCE(shared_with, ARRAY[]::text[])))`,
+      [id, me]
     )).rows[0];
     if (!t) return res.status(404).json({ error: 'not found' });
     const messages = (await pool.query(
@@ -118,7 +126,7 @@ router.get('/threads/:id', async (req: Request, res: Response) => {
          FROM ai_messages WHERE thread_id = $1 ORDER BY created_at ASC`,
       [id]
     )).rows;
-    res.json({ thread: t, messages });
+    res.json({ thread: t, messages, viewer_role: t.owner_discord_id === me ? 'owner' : 'shared' });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'failed' });
   }

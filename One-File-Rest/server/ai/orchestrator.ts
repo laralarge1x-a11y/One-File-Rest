@@ -240,6 +240,19 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       if (cites.length === 0) return { ok: false, reason: 'no inline [#N] citation markers found' };
       const bad = cites.filter((n) => n < 1 || n > srcCount);
       if (bad.length > 0) return { ok: false, reason: `citation ${bad[0]} is out of range (1..${srcCount})` };
+      // Per-paragraph citation: every substantive paragraph (>120 chars, not a
+      // bullet list intro, not a heading) must contain at least one [#N] so
+      // the model can't slip in uncited factual blocks between cited ones.
+      const paras = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+      const uncited = paras.filter((p) => {
+        if (p.length < 120) return false;
+        if (/^#+\s/.test(p)) return false;
+        if (/^[-*]\s/.test(p) && p.split('\n').every((l) => /\[#\d+\]/.test(l) || l.length < 80)) return false;
+        return !/\[#\d+\]/.test(p);
+      });
+      if (uncited.length > 0) {
+        return { ok: false, reason: `paragraph without inline [#N] citation: "${uncited[0].slice(0, 80)}…"` };
+      }
       return { ok: true };
     };
 
