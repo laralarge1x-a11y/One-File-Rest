@@ -359,6 +359,86 @@ CREATE INDEX IF NOT EXISTS idx_checklist_case ON case_checklist_items(case_id);
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS snoozed_until TIMESTAMPTZ;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS snooze_reason TEXT;
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Task #8: Stage Board + Saved Views
+-- Idempotent. We do NOT drop the existing cases.status CHECK constraint —
+-- the canonical 7-stage taxonomy lives in shared/stages.ts and is mapped
+-- onto the legacy status values at runtime.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Canonical 7-stage taxonomy projected as a generated column on cases,
+-- derived from BOTH status and outcome (matches shared/stages.ts).
+-- If a previous migration created `stage` without outcome handling, the
+-- DO block re-creates it so the expression matches the canonical mapping.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'cases' AND column_name = 'stage'
+  ) AND NOT EXISTS (
+    SELECT 1
+      FROM pg_attribute a
+      JOIN pg_class c     ON c.oid = a.attrelid
+      JOIN pg_attrdef d   ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+     WHERE c.relname = 'cases'
+       AND a.attname = 'stage'
+       AND pg_get_expr(d.adbin, d.adrelid) ILIKE '%outcome%'
+  ) THEN
+    EXECUTE 'ALTER TABLE cases DROP COLUMN stage';
+  END IF;
+END $$;
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS stage VARCHAR(40)
+  GENERATED ALWAYS AS (
+    CASE
+      WHEN LOWER(status) = 'won'                                       THEN 'resolved_won'
+      WHEN LOWER(status) = 'closed' AND LOWER(outcome) = 'won'         THEN 'resolved_won'
+      WHEN LOWER(status) = 'closed'                                    THEN 'resolved_lost'
+      WHEN LOWER(status) = 'denied' AND LOWER(outcome) = 'denied'      THEN 'resolved_lost'
+      WHEN LOWER(status) = 'denied'                                    THEN 'needs_retry'
+      WHEN LOWER(status) = 'escalated'                                 THEN 'needs_retry'
+      WHEN LOWER(status) = 'response_received'                         THEN 'tiktok_replied'
+      WHEN LOWER(status) IN ('appeal_submitted','awaiting_tiktok')     THEN 'appeal_sent'
+      WHEN LOWER(status) IN ('profile_built','appeal_drafted')         THEN 'appeal_drafting'
+      WHEN LOWER(status) IN ('pending','intake')                       THEN 'intake'
+      ELSE 'intake'
+    END
+  ) STORED;
+CREATE INDEX IF NOT EXISTS idx_cases_stage ON cases(stage);
+
+-- Per-case stage history. Powers the audit log on the kanban board and
+-- the "moved by" attribution on stage chips. One row per drag-drop or
+-- programmatic stage change.
+CREATE TABLE IF NOT EXISTS case_stage_history (
+  id SERIAL PRIMARY KEY,
+  case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  from_stage VARCHAR(40),
+  to_stage VARCHAR(40) NOT NULL,
+  from_status VARCHAR(30),
+  to_status VARCHAR(30),
+  actor_discord_id VARCHAR(20),
+  source VARCHAR(20) DEFAULT 'manual',
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_case_stage_history_case ON case_stage_history(case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_case_stage_history_stage ON case_stage_history(to_stage, created_at DESC);
+
+-- Saved sidebar views (filter presets). Scoped per-staffer. `query` holds
+-- the JSON filter payload exactly as `/api/admin/cases` accepts it.
+CREATE TABLE IF NOT EXISTS saved_views (
+  id SERIAL PRIMARY KEY,
+  owner_discord_id VARCHAR(20) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  scope VARCHAR(20) DEFAULT 'cases',
+  query JSONB DEFAULT '{}',
+  pinned BOOLEAN DEFAULT false,
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_saved_views_owner ON saved_views(owner_discord_id, sort_order);
+
 -- Knowledge Base
 CREATE TABLE IF NOT EXISTS kb_articles (
   id SERIAL PRIMARY KEY,

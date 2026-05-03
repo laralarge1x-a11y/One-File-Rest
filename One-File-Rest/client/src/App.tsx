@@ -11,6 +11,9 @@ import SharedFileSheet from './components/admin/SharedFileSheet';
 // Layout
 import AdminSidebar from './components/layout/AdminSidebar';
 import AskElitePanel from './components/ai/AskElitePanel';
+import Breadcrumbs from './components/admin/Breadcrumbs';
+import CommandPalette from './components/admin/CommandPalette';
+import HelpButton from './components/admin/HelpButton';
 import { CustomerNav, BottomNav, ToastProvider, PageTransition, LoadingSpinner } from './components/customer';
 
 // Client Pages
@@ -40,6 +43,7 @@ import StaffManagement from './pages/admin/StaffManagement';
 import PolicyManagement from './pages/admin/PolicyManagement';
 import AdminSettings from './pages/admin/AdminSettings';
 import AITools from './pages/admin/AITools';
+import StageBoard from './pages/admin/StageBoard';
 
 import './App.css';
 
@@ -51,16 +55,21 @@ const ClientLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     <CustomerNav />
     <main style={{ flex: 1, paddingBottom: 0 }}>{children}</main>
     <BottomNav />
+    <CommandPalette scope="customer" />
+    <HelpButton scope="customer" />
   </div>
 );
 
 const AdminLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div style={{ display: 'flex', minHeight: '100vh', background: '#0a0a0a' }}>
     <AdminSidebar />
-    <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
-      {children}
+    <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+      <Breadcrumbs />
+      <div style={{ flex: 1, minHeight: 0 }}>{children}</div>
     </div>
     <AskElitePanel />
+    <CommandPalette />
+    <HelpButton />
   </div>
 );
 
@@ -108,6 +117,7 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
 
         {/* ── Admin Routes ── */}
         <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/stage-board" element={<ProtectedRoute requiredRole="staff"><AdminLayout><StageBoard /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/cases"       element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseWorkspace /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/cases/:id"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseWorkspace /></AdminLayout></ProtectedRoute>} />
         <Route path="/admin/clients"     element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientList /></AdminLayout></ProtectedRoute>} />

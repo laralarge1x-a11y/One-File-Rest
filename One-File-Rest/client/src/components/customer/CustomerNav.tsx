@@ -13,6 +13,14 @@ const NAV_ITEMS = [
   { to: '/specialists',  label: 'Specialists' },
 ];
 
+function openCommandPalette() {
+  // The CommandPalette listens globally for Cmd/Ctrl+K. Dispatching a
+  // synthesized event is more robust than reaching into its component
+  // ref because the palette is mounted once at the App root.
+  const ev = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true });
+  window.dispatchEvent(ev);
+}
+
 function Avatar({ url, name, size = 32 }: { url?: string; name?: string; size?: number }) {
   const initial = (name || '?').charAt(0).toUpperCase();
   if (url) {
@@ -106,6 +114,24 @@ export default function CustomerNav() {
           </nav>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              className="nav-desktop"
+              onClick={openCommandPalette}
+              title="Search (⌘K)"
+              aria-label="Open search"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 12px', borderRadius: 999,
+                background: 'var(--bg-glass)', border: '1px solid var(--border)',
+                color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer',
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+              </svg>
+              <span>Search</span>
+              <kbd style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>⌘K</kbd>
+            </button>
             <div className="nav-desktop"><AccountSwitcher /></div>
             <NotificationBell />
             <div ref={menuRef} className="nav-desktop" style={{ position: 'relative' }}>

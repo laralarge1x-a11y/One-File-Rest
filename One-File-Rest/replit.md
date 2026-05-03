@@ -139,6 +139,60 @@ broadcasts `presence:update {discordId, online}` to the `admin` room. Used in
   legacy client-supplied `join:user` event is **ignored** — clients cannot
   join arbitrary user rooms.
 
+## Stage Board + Navigation Clarity (Task #8)
+
+Single canonical 7-stage taxonomy lives in `shared/stages.ts` and is the
+only place statuses, labels, emojis, and stage colors are defined. The
+Express server (`/api/cases`, `/api/admin/stage-board`,
+`/api/admin/search`), Discord bot, webhook embeds, customer Case Detail
+progress strip, customer dashboard buckets, admin kanban, command
+palette, and StageChip pill all read from this module.
+
+Stage Board features: drag-and-drop with audit log, multi-select
+(Cmd/Ctrl-click) + bulk-move toolbar, per-column filter chips
+(plan / assignee / priority / age), "Needs my attention" smart bucket,
+collapsible Resolved-Won/Lost columns, real-time refresh on
+`case:status_changed`, history drawer per card.
+
+Customer surface: progress strip on Case Detail, ⌘K search palette
+(`scope="customer"`), help button (`scope="customer"`), dashboard
+reorganised into Action Required / Active / Resolved buckets.
+
+- **Canonical stage taxonomy** lives in `shared/stages.ts` and is the single
+  source of truth for kanban columns, customer dashboard buckets, and the
+  `StageChip` pill. Seven stages: `intake`, `appeal_drafting`, `appeal_sent`,
+  `tiktok_replied`, `needs_retry`, `resolved_won`, `resolved_lost`. Use
+  `statusToStage(status)` to map legacy `cases.status` values, and
+  `stageToStatus(stage)` to pick the entry-point status when moving.
+- **Server endpoints** (`server/routes/admin-stage-board.ts`):
+  - `GET /api/admin/stage-board` — bucketed kanban payload with totals.
+  - `POST /api/admin/stage-board/move` — DnD endpoint; writes to
+    `case_stage_history`, fires audit log + customer notification + Discord
+    webhook on resolve. Idempotent on no-op moves.
+  - `GET /api/admin/stage-board/history/:caseId` — transition log.
+  - `GET /api/admin/search?q=…` — Cmd+K cross-search (cases/clients/kb/templates).
+  - Full CRUD `/api/admin/saved-views` (sidebar presets, per-staff).
+- `GET /api/cases?stage=<id>` filters by canonical stage and decorates each
+  row with `stage` for read-only displays.
+- **New tables (idempotent)**: `case_stage_history` (every advance, with
+  source/note/old+new status), `saved_views` (per-staff filter presets).
+- **Client**:
+  - `pages/admin/StageBoard.tsx` — full DnD kanban with optimistic moves,
+    history drawer, filter, socket auto-refresh.
+  - `components/admin/CommandPalette.tsx` — global Cmd/Ctrl+K (also `/`).
+  - `components/admin/Breadcrumbs.tsx` — slash crumbs in `AdminLayout`.
+  - `components/admin/HelpButton.tsx` — fixed `?` button bottom-right.
+  - `components/case/StageChip.tsx` — shared pill across all surfaces.
+  - `components/layout/AdminSidebar.tsx` rewritten with Pinned / More /
+    Saved Views sections, save modal, mobile hamburger, quick-search button.
+  - `pages/Dashboard.tsx` reorganized into Action Required / Active /
+    Resolved buckets via `customerBucketFor`.
+- **Deps**: only added `@dnd-kit/core` + `cmdk`. `@shared/*` alias added to
+  `tsconfig.json` + `vite.config.ts` so the canonical stage module is shared
+  between client and server (server uses `.js` ESM import paths).
+- **Constraint**: `admin-expo/` was not modified. The legacy
+  `cases.status` CHECK constraint is preserved (no drops).
+
 ## Task #9 — Omniscient AI Assistant ("Ask Elite")
 
 Read-only, staff-only AI assistant with full visibility into the entire portal

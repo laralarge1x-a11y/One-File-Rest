@@ -1,4 +1,5 @@
 import pool from '../db/client.js';
+import { formatStatusLabel, emojiForStatus, getStageMeta, statusToStage } from '../../shared/stages.js';
 
 const PORTAL_URL = process.env.PORTAL_URL || 'https://one-file-rest.replit.app';
 
@@ -164,11 +165,10 @@ export function buildNewCaseEmbed(caseData: {
         name: '\u200b',
         value:
           '**Where your case stands**\n' +
-          '🟢  **Submitted**  ·  just now\n' +
-          '⚪  In Review\n' +
-          '⚪  Appeal Drafted\n' +
+          '🟢  **Intake**  ·  just now\n' +
+          '⚪  Appeal Drafting\n' +
           '⚪  Appeal Sent\n' +
-          '⚪  Awaiting TikTok\n' +
+          '⚪  TikTok Replied\n' +
           '⚪  Resolved',
         inline: false,
       },
@@ -222,19 +222,17 @@ export function buildStatusChangedEmbed(data: {
   newStatus: string;
   updatedBy?: string;
 }): WebhookEmbed {
-  const statusEmoji: Record<string, string> = {
-    pending: '⏳', intake: '📥', profile_built: '🏗️', appeal_drafted: '✍️',
-    appeal_submitted: '📤', awaiting_tiktok: '⌛', response_received: '📩',
-    won: '✅', denied: '❌', escalated: '🚨', closed: '🔒',
-  };
-  const fmt = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const fromLabel = formatStatusLabel(data.oldStatus);
+  const toLabel = formatStatusLabel(data.newStatus);
+  const fromEmoji = emojiForStatus(data.oldStatus);
+  const toEmoji = emojiForStatus(data.newStatus);
 
   return {
     color: 0xEB459E,
     author: { name: 'Elite Tok Club  •  Case Updated' },
     title: `🔄  Case #${data.caseId}`,
     description:
-      `${statusEmoji[data.oldStatus] || '•'}  ${fmt(data.oldStatus)}  →  ${statusEmoji[data.newStatus] || '•'}  **${fmt(data.newStatus)}**\n\u200b`,
+      `${fromEmoji}  ${fromLabel}  →  ${toEmoji}  **${toLabel}**\n\u200b`,
     fields: [
       { name: 'Updated by', value: data.updatedBy || 'Staff', inline: true },
     ],

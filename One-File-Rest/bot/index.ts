@@ -17,6 +17,7 @@ import {
   ButtonStyle,
   ButtonInteraction,
 } from 'discord.js';
+import { emojiForStatus, formatStatusLabel } from '../shared/stages.js';
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
@@ -429,20 +430,14 @@ async function handleCaseStatus(interaction: ChatInputCommandInteraction) {
       return;
     }
 
-    const statusEmoji: Record<string, string> = {
-      pending: '⏳', intake: '📥', profile_built: '🏗️', appeal_drafted: '✍️',
-      appeal_submitted: '📤', awaiting_tiktok: '⌛', response_received: '📩',
-      won: '✅', denied: '❌', escalated: '🚨', closed: '🔒',
-    };
-
     const caseEmbed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle(`📋 Cases for ${targetUser.username}`)
       .setDescription(`Found **${cases.length}** case(s)`)
       .addFields(
         cases.slice(0, 10).map((c) => ({
-          name: `${statusEmoji[c.status] || '📁'} Case #${c.id} — ${c.violation_type || 'Unknown'}`,
-          value: `Status: **${c.status}**\nAccount: @${c.account_username || 'N/A'}\nCreated: ${new Date(c.created_at).toLocaleDateString()}`,
+          name: `${emojiForStatus(c.status)} Case #${c.id} — ${c.violation_type || 'Unknown'}`,
+          value: `Stage: **${formatStatusLabel(c.status)}**\nAccount: @${c.account_username || 'N/A'}\nCreated: ${new Date(c.created_at).toLocaleDateString()}`,
           inline: true,
         }))
       )
@@ -591,20 +586,14 @@ async function handleCustomerButton(interaction: ButtonInteraction) {
         });
         return;
       }
-      const statusEmoji: Record<string, string> = {
-        pending: '⏳', intake: '📥', profile_built: '🏗️', appeal_drafted: '✍️',
-        appeal_submitted: '📤', awaiting_tiktok: '⌛', response_received: '📩',
-        won: '✅', denied: '❌', escalated: '🚨', closed: '🔒',
-      };
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle(`📋  Your cases  •  ${cases.length} total`)
         .setDescription(
           cases.slice(0, 8).map((c) => {
-            const emoji = statusEmoji[c.status] || '📁';
             const acct = c.account_username ? `@${c.account_username}` : 'Account pending';
-            return `${emoji}  **Case #${c.id}** — ${c.violation_type || 'Violation'}\n` +
-                   `\u2002\u2002${acct}  •  \`${c.status}\`  •  ${new Date(c.created_at).toLocaleDateString()}`;
+            return `${emojiForStatus(c.status)}  **Case #${c.id}** — ${c.violation_type || 'Violation'}\n` +
+                   `\u2002\u2002${acct}  •  \`${formatStatusLabel(c.status)}\`  •  ${new Date(c.created_at).toLocaleDateString()}`;
           }).join('\n\n'),
         )
         .setFooter({ text: 'Elite Tok Club Portal' });

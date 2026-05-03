@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { motion, useInView, useMotionValue, useTransform, animate } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import { useSocket } from '../hooks/useSocket';
-import { GlassCard, StatusBadge, LoadingSpinner, EmptyState, ComplianceWidget } from '../components/customer';
+import { GlassCard, LoadingSpinner, EmptyState, ComplianceWidget } from '../components/customer';
+import { StageChip } from '../components/case';
+import { statusToStage, customerBucketFor, type StageId } from '@shared/stages';
 
 interface Case {
   id: number;
@@ -13,8 +15,10 @@ interface Case {
   priority: string;
   appeal_deadline: string;
   created_at: string;
-  outcome?: string;
+  updated_at?: string;
+  outcome?: string | null;
   violation_description?: string;
+  stage?: StageId;
 }
 
 const PLAN_THEMES: Record<string, { glow: string; label: string; price: string }> = {
@@ -65,14 +69,22 @@ export default function Dashboard() {
 
   if (loading) return <LoadingSpinner fullScreen label="Loading your dashboard..." />;
 
-  const closed = ['won', 'denied', 'closed', 'resolved'];
-  const total = cases.length;
-  const active = cases.filter((c) => !closed.includes(c.status?.toLowerCase())).length;
-  const resolved = cases.filter((c) => ['won', 'resolved'].includes(c.status?.toLowerCase())).length;
+  // Bucket cases using the canonical 7-stage taxonomy. Action Required
+  // surfaces tiktok_replied + needs_retry — the two stages that block on a
+  // customer reply or staff intervention.
+  const withStage: Array<Case & { stage: StageId }> = cases.map((c) => ({
+    ...c,
+    stage: c.stage || statusToStage(c.status, c.outcome),
+  }));
+  const buckets = { active: [] as typeof withStage, action_required: [] as typeof withStage, resolved: [] as typeof withStage };
+  for (const c of withStage) buckets[customerBucketFor(c.stage)].push(c);
+  const total = withStage.length;
+  const active = buckets.active.length + buckets.action_required.length;
+  const resolved = buckets.resolved.length;
 
-  const planKey = ((user as any)?.plan || 'free') as string;
+  const planKey = (user?.plan || 'free') as string;
   const planTheme = PLAN_THEMES[planKey] || PLAN_THEMES.free;
-  const planExpires = (user as any)?.plan_expires_at as string | undefined;
+  const planExpires = user?.plan_expiry || undefined;
   let daysRemaining: number | null = null;
   let totalDays = 30;
   if (planExpires) {
@@ -90,7 +102,7 @@ export default function Dashboard() {
         ? ['1 expert appeal / month', '72h response SLA', 'Standard support']
         : ['Limited features', 'Upgrade to access expert appeals'];
 
-  const recent = cases.slice(0, 3);
+  const recent = withStage.slice(0, 3);
 
   return (
     <div className="page-wrap">
@@ -98,8 +110,8 @@ export default function Dashboard() {
         initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}
         style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28 }}
       >
-        {(user as any)?.avatar_url
-          ? <img src={(user as any).avatar_url} alt="" style={{ width: 48, height: 48, borderRadius: '50%', border: '1px solid var(--border)' }} />
+        {user?.avatar_url
+          ? <img src={user.avatar_url} alt="" style={{ width: 48, height: 48, borderRadius: '50%', border: '1px solid var(--border)' }} />
           : <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 18 }}>
               {(user?.discord_username || '?').charAt(0).toUpperCase()}
             </div>
@@ -199,15 +211,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Recent Cases</h2>
-        <button onClick={() => navigate('/cases')} style={{
-          fontSize: 13, fontWeight: 600, color: 'var(--accent)',
-          padding: '6px 10px', borderRadius: 8, transition: 'var(--transition)',
-        }}>View All →</button>
-      </div>
-
-      {recent.length === 0 ? (
+      {total === 0 ? (
         <GlassCard noHover style={{ padding: 8 }}>
           <EmptyState
             icon="📭"
@@ -218,42 +222,61 @@ export default function Dashboard() {
           />
         </GlassCard>
       ) : (
-        <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }}
-          style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
-        >
-          {recent.map((c) => (
-            <motion.div key={c.id} variants={{ hidden: { opacity: 0, y: 14 }, show: { opacity: 1, y: 0 } }}>
-              <GlassCard onClick={() => navigate(`/cases/${c.id}`)} style={{ padding: 18 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
-                      <span style={{
-                        fontSize: 11, fontWeight: 700, padding: '3px 8px',
-                        background: 'var(--bg-glass)', border: '1px solid var(--border)',
-                        borderRadius: 6, color: 'var(--text-muted)', fontFamily: 'monospace',
-                      }}>#{c.id}</span>
-                      <StatusBadge status={c.status} size="sm" />
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
-                      {c.violation_type || 'Untitled case'} · <span style={{ color: 'var(--text-muted)' }}>@{c.account_username}</span>
-                    </div>
-                    {c.violation_description && (
-                      <div style={{
-                        fontSize: 13, color: 'var(--text-secondary)',
-                        display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
-                      }}>{c.violation_description}</div>
-                    )}
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-                      Created {new Date(c.created_at).toLocaleDateString()}
-                    </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          {([
+            { key: 'action_required', title: 'Action Required', subtitle: 'These need your attention or staff follow-up.', items: buckets.action_required, accent: '#FAA61A' },
+            { key: 'active',          title: 'Active',          subtitle: 'In progress with our team.',                  items: buckets.active,          accent: '#5865F2' },
+            { key: 'resolved',        title: 'Resolved',        subtitle: 'Closed cases — wins and losses.',             items: buckets.resolved,        accent: '#57F287' },
+          ] as const).map((section) => (
+            section.items.length === 0 ? null : (
+              <section key={section.key}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10, gap: 10 }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: section.accent, boxShadow: `0 0 6px ${section.accent}88` }} />
+                      {section.title}
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-glass)', padding: '2px 8px', borderRadius: 999 }}>{section.items.length}</span>
+                    </h2>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{section.subtitle}</div>
                   </div>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 18 }}>→</span>
+                  <button onClick={() => navigate('/cases')} style={{
+                    fontSize: 12, fontWeight: 600, color: 'var(--accent)',
+                    padding: '4px 8px', borderRadius: 6,
+                  }}>View all →</button>
                 </div>
-              </GlassCard>
-            </motion.div>
+                <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.05 } } }}
+                  style={{ display: 'flex', flexDirection: 'column', gap: 10 }}
+                >
+                  {section.items.slice(0, 5).map((c) => (
+                    <motion.div key={c.id} variants={{ hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } }}>
+                      <GlassCard onClick={() => navigate(`/cases/${c.id}`)} style={{ padding: 16 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                              <span style={{
+                                fontSize: 11, fontWeight: 700, padding: '3px 7px',
+                                background: 'var(--bg-glass)', border: '1px solid var(--border)',
+                                borderRadius: 6, color: 'var(--text-muted)', fontFamily: 'monospace',
+                              }}>#{c.id}</span>
+                              <StageChip stage={c.stage} size="sm" />
+                            </div>
+                            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>
+                              {c.violation_type || 'Untitled case'} · <span style={{ color: 'var(--text-muted)' }}>@{c.account_username}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              Updated {new Date(c.updated_at || c.created_at).toLocaleDateString()}
+                            </div>
+                          </div>
+                          <span style={{ color: 'var(--text-muted)', fontSize: 18 }}>→</span>
+                        </div>
+                      </GlassCard>
+                    </motion.div>
+                  ))}
+                </motion.div>
+              </section>
+            )
           ))}
-        </motion.div>
+        </div>
       )}
 
       <div style={{ marginTop: 28, display: 'flex', gap: 12, flexWrap: 'wrap' }}>

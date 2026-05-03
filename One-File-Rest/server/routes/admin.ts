@@ -256,7 +256,7 @@ router.patch('/cases/:id', async (req: Request, res: Response) => {
 
     // In-app notification + socket + timeline advance
     if (status && status !== oldCase.status) {
-      await advanceCaseTimeline(parseInt(id), status, staffId);
+      await advanceCaseTimeline(parseInt(id), status, staffId, { source: 'manual', oldStatus: oldCase.status });
       createNotification({
         userDiscordId: oldCase.user_discord_id,
         type: 'status_change',

@@ -28,9 +28,10 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./client/src/*"]
+      "@/*": ["./client/src/*"],
+      "@shared/*": ["./shared/*"]
     }
   },
-  "include": ["server", "bot-bridge", "client/src"],
+  "include": ["server", "bot-bridge", "client/src", "shared"],
   "exclude": ["node_modules"]
 }

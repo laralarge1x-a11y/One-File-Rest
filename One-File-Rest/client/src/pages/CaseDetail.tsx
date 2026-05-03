@@ -3,9 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import { useSocket } from '../hooks/useSocket';
-import { GlassCard, StatusBadge, LoadingSpinner, EmptyState, useToast } from '../components/customer';
+import { GlassCard, LoadingSpinner, EmptyState, useToast } from '../components/customer';
 import { CaseTimeline, type TimelineStage } from '../components/case';
 import DocumentChecklist from '../components/case/DocumentChecklist';
+import StageChip from '../components/case/StageChip';
+import { STAGES, statusToStage, getStageMeta } from '@shared/stages';
 
 interface Message {
   id: number;
@@ -53,19 +55,6 @@ function useCountdown(deadline?: string) {
   let label = days > 0 ? `${days}d ${hours}h remaining` : hours > 0 ? `${hours}h ${mins}m remaining` : `${mins}m remaining`;
   return { expired: false, label, urgent: ms < 24 * 3_600_000 };
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: 'Submitted — awaiting team review',
-  intake: 'Intake — gathering details',
-  profile_built: 'Profile built — preparing appeal',
-  appeal_drafted: 'Appeal drafted — under final review',
-  appeal_submitted: 'Appeal sent to TikTok',
-  awaiting_tiktok: 'Awaiting TikTok response',
-  response_received: 'TikTok responded — reviewing',
-  won: 'Resolved — Won 🎉',
-  denied: 'Resolved — Denied',
-  closed: 'Closed',
-};
 
 const NEXT_ACTION: Record<string, string> = {
   pending: 'Our team will review and contact you within 24 hours.',
@@ -202,7 +191,7 @@ export default function CaseDetail() {
           background: 'var(--bg-glass)', border: '1px solid var(--border)',
           borderRadius: 6, color: 'var(--text-muted)', fontFamily: 'monospace',
         }}>Case #{caseData.id}</span>
-        <StatusBadge status={caseData.status} />
+        <StageChip status={caseData.status} long />
         {caseData.staff_name && (
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· Assigned to <strong style={{ color: 'var(--text-primary)' }}>{caseData.staff_name}</strong></span>
         )}
@@ -235,13 +224,17 @@ export default function CaseDetail() {
         </a>
       </div>
 
+      {/* Stage progress strip — same canonical 7-stage taxonomy as the
+          admin kanban so customers see exactly where their case sits. */}
+      <ProgressStrip currentStatus={caseData.status} />
+
       {/* "What's happening now" callout */}
       <GlassCard noHover style={{ padding: 18, marginBottom: 20, background: 'rgba(88,101,242,0.06)', border: '1px solid rgba(88,101,242,0.25)' }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
           What's happening right now
         </div>
         <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
-          {STATUS_LABEL[caseData.status] || caseData.status.replace(/_/g, ' ')}
+          {getStageMeta(statusToStage(caseData.status)).label}
         </div>
         <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
           {NEXT_ACTION[caseData.status] || 'We will keep you posted on next steps here.'}
@@ -485,6 +478,55 @@ function Info({ label, value }: { label: string; value: React.ReactNode }) {
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, fontSize: 13 }}>
       <span style={{ color: 'var(--text-muted)' }}>{label}</span>
       <strong style={{ color: 'var(--text-primary)', textTransform: 'capitalize' }}>{value}</strong>
+    </div>
+  );
+}
+
+function ProgressStrip({ currentStatus }: { currentStatus: string }) {
+  const currentStage = statusToStage(currentStatus);
+  const visible = STAGES.filter((s) => !s.terminal);
+  const currentIdx = visible.findIndex((s) => s.id === currentStage);
+  const isResolved = currentStage === 'resolved_won' || currentStage === 'resolved_lost';
+  const meta = getStageMeta(currentStage);
+
+  return (
+    <div className="progress-strip" style={{
+      display: 'flex', alignItems: 'stretch', gap: 4, marginBottom: 16,
+      padding: 12, background: 'var(--bg-glass)', border: '1px solid var(--border)',
+      borderRadius: 12, overflowX: 'auto',
+    }}>
+      {visible.map((s, i) => {
+        const done = isResolved || i < currentIdx;
+        const active = !isResolved && i === currentIdx;
+        const color = active ? meta.color : done ? '#57F287' : '#3a3a44';
+        return (
+          <div key={s.id} title={s.description} style={{
+            flex: '1 0 100px', minWidth: 100, textAlign: 'center',
+          }}>
+            <div style={{
+              height: 4, borderRadius: 2, background: color,
+              boxShadow: active ? `0 0 10px ${meta.glow}` : 'none', marginBottom: 6,
+            }} />
+            <div style={{
+              fontSize: 10, fontWeight: active ? 700 : 600,
+              color: active ? meta.color : done ? '#57F287' : 'var(--text-muted)',
+              textTransform: 'uppercase', letterSpacing: 0.06,
+            }}>{s.short}</div>
+          </div>
+        );
+      })}
+      {isResolved && (
+        <div style={{ flex: '1 0 110px', textAlign: 'center' }}>
+          <div style={{
+            height: 4, borderRadius: 2, background: meta.color,
+            boxShadow: `0 0 10px ${meta.glow}`, marginBottom: 6,
+          }} />
+          <div style={{
+            fontSize: 10, fontWeight: 700, color: meta.color,
+            textTransform: 'uppercase', letterSpacing: 0.06,
+          }}>{meta.short}</div>
+        </div>
+      )}
     </div>
   );
 }

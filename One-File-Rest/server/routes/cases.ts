@@ -4,6 +4,7 @@ import { calculateComplianceScore } from '../services/compliance-score.js';
 import { fireWebhook, buildNewCaseEmbed, buildStatusChangedEmbed, logAudit } from '../services/webhook.js';
 import { createNotification, emitCaseStatusChanged } from '../services/notifications.js';
 import { advanceCaseTimeline } from '../services/timeline.js';
+import { statusToStage, STAGE_IDS, getStatusesForStage, type StageId } from '../../shared/stages.js';
 
 const router = Router();
 
@@ -12,28 +13,44 @@ router.get('/', async (req: Request, res: Response) => {
     const discordId = req.user?.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user?.role || '');
 
-    let query: string;
-    let values: any[];
+    // ?stage=intake|appeal_drafting|... — canonical 7-stage filter. Stage
+    // → legacy-status translation lives in shared/stages.ts (single source
+    // of truth for client, server, bot, kanban, and webhooks).
+    const stageParam = String(req.query.stage || '').trim();
+    const stageFilter = stageParam && (STAGE_IDS as readonly string[]).includes(stageParam)
+      ? (stageParam as StageId) : null;
+    const stageStatuses = stageFilter ? getStatusesForStage(stageFilter) : null;
 
-    if (isStaff) {
-      query = `SELECT c.*, u.discord_username, s.name as staff_name, u.plan
-               FROM cases c
-               JOIN users u ON c.user_discord_id = u.discord_id
-               LEFT JOIN staff s ON c.staff_assigned_id = s.discord_id
-               ORDER BY c.created_at DESC`;
-      values = [];
-    } else {
-      query = `SELECT c.*, u.discord_username, s.name as staff_name
-               FROM cases c
-               JOIN users u ON c.user_discord_id = u.discord_id
-               LEFT JOIN staff s ON c.staff_assigned_id = s.discord_id
-               WHERE c.user_discord_id = $1
-               ORDER BY c.created_at DESC`;
-      values = [discordId];
+    const conditions: string[] = ['1=1'];
+    const values: (string | string[])[] = [];
+    let p = 1;
+    if (!isStaff) { conditions.push(`c.user_discord_id = $${p++}`); values.push(discordId!); }
+    if (stageStatuses && stageStatuses.length) {
+      conditions.push(`c.status = ANY($${p++}::text[])`);
+      values.push(stageStatuses);
+    }
+    // Customer-side palette / search hits this with ?q= — search the
+    // caller's own cases by id, account_username, or violation_type.
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      conditions.push(`(c.id::text = $${p} OR c.account_username ILIKE $${p + 1} OR c.violation_type ILIKE $${p + 1})`);
+      values.push(q, `%${q}%`);
+      p += 2;
     }
 
-    const result = await pool.query(query, values);
-    res.json(result.rows);
+    const result = await pool.query(
+      `SELECT c.*, u.discord_username, s.name as staff_name, u.plan
+         FROM cases c
+         JOIN users u ON c.user_discord_id = u.discord_id
+         LEFT JOIN staff s ON c.staff_assigned_id = s.discord_id
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY c.created_at DESC`,
+      values
+    );
+    // Decorate each row with its canonical stage so client doesn't need to
+    // re-import the mapping for read-only displays.
+    const rows = result.rows.map((r: { status: string; outcome?: string | null }) => ({ ...r, stage: statusToStage(r.status, r.outcome) }));
+    res.json(rows);
   } catch (err) {
     console.error('Error fetching cases:', err);
     res.status(500).json({ error: 'Failed to fetch cases' });
@@ -259,7 +276,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
     // In-app notification + socket broadcast (status change)
     if (status && status !== oldCase.status) {
-      await advanceCaseTimeline(parseInt(id), status, discordId ?? null);
+      await advanceCaseTimeline(parseInt(id), status, discordId ?? null, { source: 'manual', oldStatus: oldCase.status });
     }
     if (status && status !== oldCase.status && isStaff) {
       createNotification({
