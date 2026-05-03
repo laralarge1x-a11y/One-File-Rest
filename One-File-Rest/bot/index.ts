@@ -727,6 +727,13 @@ async function handleAskPostPublic(interaction: ButtonInteraction) {
     await interaction.reply({ content: '⌛ This Ask Elite answer is no longer available to post (expired or already posted).', ephemeral: true });
     return;
   }
+  if (!isStaffOnlyChannel(interaction.channelId)) {
+    await interaction.reply({
+      content: '🔒 Posting publicly is only allowed in channels listed in AI_STAFF_CHANNEL_IDS. Ask Elite answers can contain other clients\' data, so they cannot be posted in customer or mixed channels.',
+      ephemeral: true,
+    });
+    return;
+  }
   pendingPosts.delete(`${interactionId}:${ownerId}`);
   await interaction.deferReply({ ephemeral: false });
   const chunks = chunkMessage(`**🤖  Ask Elite · posted by <@${ownerId}>**\n\n${pending.answer}`);
@@ -769,26 +776,33 @@ async function handleAsk(interaction: ChatInputCommandInteraction) {
   try {
     const result = await runAsk(question, interaction.user.id);
     const chunks = chunkMessage(result.answer);
-    const postBtn = new ButtonBuilder()
-      .setCustomId(`ask_post:${interaction.user.id}`)
-      .setLabel('Post publicly')
-      .setStyle(ButtonStyle.Secondary);
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(postBtn);
-    await interaction.editReply({ content: chunks[0], components: [row] });
+    const canPostPublic = isStaffOnlyChannel(interaction.channelId);
+    const postBtn = canPostPublic
+      ? new ButtonBuilder()
+          .setCustomId(`ask_post:${interaction.user.id}`)
+          .setLabel('Post publicly')
+          .setStyle(ButtonStyle.Secondary)
+      : null;
+    const components = postBtn
+      ? [new ActionRowBuilder<ButtonBuilder>().addComponents(postBtn)]
+      : [];
+    await interaction.editReply({ content: chunks[0], components });
     for (let i = 1; i < chunks.length; i++) {
       await interaction.followUp({ content: chunks[i], ephemeral: true });
     }
     const srcEmbed = buildSourcesEmbed(result.sources || []);
     if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral: true });
-    pendingPosts.set(`${interaction.id}:${interaction.user.id}`, {
-      answer: result.answer,
-      sources: result.sources || [],
-      channelId: interaction.channelId || '',
-      expiresAt: Date.now() + 10 * 60_000,
-    });
-    const updatedBtn = ButtonBuilder.from(postBtn).setCustomId(`ask_post:${interaction.user.id}:${interaction.id}`);
-    const updatedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(updatedBtn);
-    await interaction.editReply({ content: chunks[0], components: [updatedRow] }).catch(() => {});
+    if (postBtn) {
+      pendingPosts.set(`${interaction.id}:${interaction.user.id}`, {
+        answer: result.answer,
+        sources: result.sources || [],
+        channelId: interaction.channelId || '',
+        expiresAt: Date.now() + 10 * 60_000,
+      });
+      const updatedBtn = ButtonBuilder.from(postBtn).setCustomId(`ask_post:${interaction.user.id}:${interaction.id}`);
+      const updatedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(updatedBtn);
+      await interaction.editReply({ content: chunks[0], components: [updatedRow] }).catch(() => {});
+    }
   } catch (err: any) {
     const msg = err?.message || 'failed';
     const friendly = /not_staff/i.test(msg)
