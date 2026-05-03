@@ -200,7 +200,7 @@ const searchDiscord: ToolDef = {
     if (a.query) { where.push(`content ILIKE $${i++}`); params.push(`%${a.query}%`); }
     if (a.since_days) { where.push(`created_at > NOW() - ($${i++}::int * INTERVAL '1 day')`); params.push(Number(a.since_days)); }
     const sql = `
-      SELECT id, channel_id, author_discord_id, author_username, is_bot, content, created_at, edited_at, attachments
+      SELECT id, channel_id, guild_id, author_discord_id, author_username, is_bot, content, created_at, edited_at, attachments
         FROM discord_messages
         WHERE ${where.join(' AND ')}
         ORDER BY created_at DESC
@@ -209,6 +209,7 @@ const searchDiscord: ToolDef = {
     const sources: Source[] = rows.map((d: any) => ({
       type: 'discord', id: String(d.id),
       label: `Discord · ${d.author_username || d.author_discord_id} · ${new Date(d.created_at).toISOString().slice(0, 16).replace('T', ' ')}`,
+      url: d.guild_id ? `https://discord.com/channels/${d.guild_id}/${d.channel_id}/${d.id}` : undefined,
       snippet: trunc(d.content, 160),
     }));
     return { ok: true, data: { count: rows.length, messages: rows.map((d: any) => ({ ...d, id: String(d.id), content: trunc(d.content, 400) })) }, sources };
@@ -230,16 +231,18 @@ const getDiscordTranscript: ToolDef = {
   handler: async (a) => {
     const limit = Math.min(clamp(a.limit, 25, 50), 50);
     const rows = (await pool.query(
-      `SELECT id, author_username, author_discord_id, is_bot, content, created_at
+      `SELECT id, guild_id, author_username, author_discord_id, is_bot, content, created_at
          FROM discord_messages
          WHERE channel_id = $1 AND deleted_at IS NULL
          ORDER BY created_at DESC
          LIMIT ${limit}`,
       [a.channel_id]
     )).rows.reverse();
+    const guildId = rows[0]?.guild_id;
     const sources: Source[] = [{
       type: 'discord', id: a.channel_id,
       label: `Discord channel ${a.channel_id} · last ${rows.length} messages`,
+      url: guildId ? `https://discord.com/channels/${guildId}/${a.channel_id}` : undefined,
     }];
     return { ok: true, data: { count: rows.length, transcript: rows.map((r: any) => ({ ...r, id: String(r.id), content: trunc(r.content, 400) })) }, sources };
   },

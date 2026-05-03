@@ -247,6 +247,7 @@ router.post('/ai/ask', async (req: Request, res: Response) => {
     }
     const staff = await resolveStaff(staff_discord_id);
     if (!staff) return res.status(403).json({ error: 'not_staff' });
+    const startedAt = Date.now();
     const result = await orchestrateOnce({
       question: String(question).trim(),
       threadId: thread_id ? Number(thread_id) : undefined,
@@ -255,6 +256,20 @@ router.post('/ai/ask', async (req: Request, res: Response) => {
       staffRole: staff.role,
       contextHint: context_hint || undefined,
     });
+    logAudit({
+      actorDiscordId: staff_discord_id,
+      action: 'ai_ask',
+      targetType: 'ai_thread',
+      targetId: result.thread_id ? String(result.thread_id) : undefined,
+      details: {
+        surface: 'discord',
+        q_preview: String(question).slice(0, 240),
+        tools: result.tools || [],
+        sources: (result.sources || []).slice(0, 8).map((s: any) => ({ type: s.type, id: s.id, label: s.label })),
+        duration_ms: Date.now() - startedAt,
+        answer_preview: String(result.answer || '').slice(0, 240),
+      },
+    }).catch(() => {});
     res.json(result);
   } catch (err: any) {
     console.error('[bot/ai/ask] failed', err);

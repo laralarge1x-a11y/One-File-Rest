@@ -758,15 +758,20 @@ async function handleDossier(interaction: ChatInputCommandInteraction) {
 //   2) channels explicitly opted-in via AI_STAFF_CHANNEL_IDS
 // This keeps a busy guild's general/voice/announcements out of the index
 // and bounds DB growth to roughly (active customers + opted-in channels).
-function shouldIndex(channelId: string): boolean {
-  if (channelUserMap.has(channelId)) return true;
-  if (AI_STAFF_CHANNELS.has(channelId)) return true;
-  return false;
+function shouldIndex(message: Message): boolean {
+  if (!message.guildId || !message.channelId) return false;
+  if (channelUserMap.has(message.channelId)) return true;
+  if (AI_STAFF_CHANNELS.has(message.channelId)) return true;
+  // Index all guild text channels the bot can see, so Ask Elite can summarize
+  // arbitrary tickets / staff conversations. DMs are still excluded above.
+  const ch: any = message.channel;
+  if (!ch || ch.isDMBased?.()) return false;
+  if (typeof ch.isTextBased === 'function' && !ch.isTextBased()) return false;
+  return true;
 }
 
 async function indexDiscordMessage(message: Message) {
-  if (!message.guildId || !message.channelId) return;
-  if (!shouldIndex(message.channelId)) return;
+  if (!shouldIndex(message)) return;
   try {
     await callBridge('POST', '/bot/discord-messages/ingest', {
       id: message.id,

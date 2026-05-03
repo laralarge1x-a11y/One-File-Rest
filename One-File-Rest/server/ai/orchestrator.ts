@@ -312,6 +312,15 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       totalIn += streamed.tokens_in;
       totalOut += streamed.tokens_out;
       if (streamed.content) finalAnswer = streamed.content;
+      // Re-validate the actual streamed text (not just the pre-stream draft).
+      // If grounding now fails, surface a clear correction to the client and
+      // persist the corrected refusal — never the unverified streamed text.
+      const postCheck = validateGrounding(finalAnswer, sources.length);
+      if (!postCheck.ok && !isRefusalOrTrivial(finalAnswer)) {
+        finalAnswer = `\n\n⚠️  Correction: the streamed answer above failed citation validation (${postCheck.reason}). Treat it as untrusted; the verified answer is: I cannot answer with confidence. Please rephrase or check the portal directly.`;
+        emit({ type: 'token', text: finalAnswer });
+        finalAnswer = `I cannot answer that with confidence — ${postCheck.reason}. Please rephrase the question, or check the portal directly for the relevant case/client.`;
+      }
     } catch (streamErr) {
       console.warn('[orchestrator] streaming failed, falling back to single emit:', (streamErr as Error)?.message);
       emit({ type: 'token', text: finalAnswer });

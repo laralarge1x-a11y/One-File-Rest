@@ -40,6 +40,12 @@ router.post('/ask', async (req: Request, res: Response) => {
   let aborted = false;
   req.on('close', () => { aborted = true; });
 
+  const auditTools: string[] = [];
+  const auditSources: Array<{ type: string; id: any; label: string }> = [];
+  let auditThreadId: number | null = null;
+  let auditAnswerPreview = '';
+  const startedAt = Date.now();
+
   try {
     await orchestrate({
       question: question.trim(),
@@ -53,6 +59,11 @@ router.post('/ask', async (req: Request, res: Response) => {
       } : undefined,
       isAborted: () => aborted,
     }, (e) => {
+      if (e?.type === 'step' && e.tool) auditTools.push(String(e.tool));
+      else if (e?.type === 'sources' && Array.isArray(e.sources)) {
+        for (const s of e.sources.slice(0, 8)) auditSources.push({ type: s.type, id: s.id, label: s.label });
+      } else if (e?.type === 'thread' && e.thread_id) auditThreadId = Number(e.thread_id);
+      else if (e?.type === 'token' && typeof e.text === 'string') auditAnswerPreview = (auditAnswerPreview + e.text).slice(0, 240);
       if (!aborted) send(e);
     });
 
@@ -60,7 +71,15 @@ router.post('/ask', async (req: Request, res: Response) => {
       actorDiscordId: staff.discord_id,
       action: 'ai_ask',
       targetType: 'ai_thread',
-      details: { surface: surface || 'web', q_preview: question.slice(0, 120) },
+      targetId: auditThreadId ? String(auditThreadId) : undefined,
+      details: {
+        surface: surface || 'web',
+        q_preview: question.slice(0, 240),
+        tools: auditTools,
+        sources: auditSources,
+        duration_ms: Date.now() - startedAt,
+        answer_preview: auditAnswerPreview,
+      },
     }).catch(() => {});
   } catch (err: any) {
     send({ type: 'error', message: err?.message || 'ask failed' });
