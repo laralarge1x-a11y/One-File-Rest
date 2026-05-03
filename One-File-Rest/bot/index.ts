@@ -468,49 +468,78 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 async function backfillDiscordHistory() {
   const days = parseInt(process.env.AI_BACKFILL_DAYS || '7', 10);
-  const perChannel = parseInt(process.env.AI_BACKFILL_LIMIT_PER_CHANNEL || '200', 10);
+  const perChannel = parseInt(process.env.AI_BACKFILL_LIMIT_PER_CHANNEL || '1000', 10);
   const cutoff = Date.now() - days * 86400_000;
   const targets = new Set<string>([
     ...channelUserMap.keys(),
     ...AI_STAFF_CHANNELS,
   ]);
+  // Expand targets to every text channel the bot can see in every guild it's
+  // a member of (excluding voice/stage/category channels). DMs are not in
+  // guild caches so they're naturally excluded.
+  for (const guild of client.guilds.cache.values()) {
+    for (const ch of guild.channels.cache.values()) {
+      const anyCh: any = ch;
+      if (typeof anyCh.isTextBased === 'function' && anyCh.isTextBased() && !anyCh.isVoiceBased?.()) {
+        targets.add(ch.id);
+      }
+    }
+  }
   if (targets.size === 0) {
-    console.log('[Bot] Backfill: no tracked channels yet — skipping.');
+    console.log('[Bot] Backfill: no eligible channels — skipping.');
     return;
   }
   let total = 0;
+  let channelsCovered = 0;
   for (const channelId of targets) {
     try {
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (!channel || !('messages' in channel)) continue;
-      const fetched = await (channel as TextChannel).messages.fetch({ limit: Math.min(perChannel, 100) }).catch(() => null);
-      if (!fetched) continue;
-      const batch: Array<Record<string, unknown>> = [];
-      for (const msg of fetched.values()) {
-        if (msg.createdTimestamp < cutoff) continue;
-        batch.push({
-          id: msg.id,
-          channel_id: msg.channelId,
-          guild_id: msg.guildId,
-          author_discord_id: msg.author.id,
-          author_username: msg.author.username,
-          is_bot: msg.author.bot,
-          content: msg.content || '',
-          attachments: Array.from(msg.attachments.values()).map((a) => ({ id: a.id, url: a.url, name: a.name, size: a.size })),
-          embeds: msg.embeds.map((e) => ({ title: e.title, description: e.description, url: e.url })),
-          referenced_message_id: msg.reference?.messageId || null,
-          created_at: new Date(msg.createdTimestamp).toISOString(),
-          edited_at: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
-        });
+      const ch = channel as TextChannel;
+      let before: string | undefined = undefined;
+      let pulledHere = 0;
+      let stop = false;
+      // Paginate backwards in pages of 100 (Discord API max) until we either
+      // hit the day cutoff, the per-channel cap, or run out of messages.
+      while (!stop && pulledHere < perChannel) {
+        const fetched = await ch.messages.fetch({ limit: 100, before }).catch(() => null);
+        if (!fetched || fetched.size === 0) break;
+        const batch: Array<Record<string, unknown>> = [];
+        let oldestId: string | undefined;
+        for (const msg of fetched.values()) {
+          oldestId = msg.id;
+          if (msg.createdTimestamp < cutoff) { stop = true; continue; }
+          batch.push({
+            id: msg.id,
+            channel_id: msg.channelId,
+            guild_id: msg.guildId,
+            author_discord_id: msg.author.id,
+            author_username: msg.author.username,
+            is_bot: msg.author.bot,
+            content: msg.content || '',
+            attachments: Array.from(msg.attachments.values()).map((a) => ({ id: a.id, url: a.url, name: a.name, size: a.size })),
+            embeds: msg.embeds.map((e) => ({ title: e.title, description: e.description, url: e.url })),
+            referenced_message_id: msg.reference?.messageId || null,
+            created_at: new Date(msg.createdTimestamp).toISOString(),
+            edited_at: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
+          });
+        }
+        if (batch.length > 0) {
+          await callBridge('POST', '/bot/discord-messages/bulk-ingest', { messages: batch });
+          total += batch.length;
+          pulledHere += batch.length;
+        }
+        if (!oldestId || fetched.size < 100) break;
+        before = oldestId;
+        // Light delay to stay friendly to Discord rate limits.
+        await new Promise((r) => setTimeout(r, 250));
       }
-      if (batch.length === 0) continue;
-      await callBridge('POST', '/bot/discord-messages/bulk-ingest', { messages: batch });
-      total += batch.length;
+      channelsCovered++;
     } catch (err: any) {
       console.warn(`[Bot] Backfill channel ${channelId} failed:`, err?.message);
     }
   }
-  console.log(`[Bot] Backfill complete: indexed ${total} historical messages across ${targets.size} channels (last ${days}d).`);
+  console.log(`[Bot] Backfill complete: indexed ${total} historical messages across ${channelsCovered}/${targets.size} channels (last ${days}d, cap ${perChannel}/ch).`);
 }
 
 // ─── Customer button handlers (Submit New Case / My Cases / Help) ─────────

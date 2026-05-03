@@ -313,13 +313,13 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       totalOut += streamed.tokens_out;
       if (streamed.content) finalAnswer = streamed.content;
       // Re-validate the actual streamed text (not just the pre-stream draft).
-      // If grounding now fails, surface a clear correction to the client and
-      // persist the corrected refusal — never the unverified streamed text.
+      // If grounding fails, emit a `replace` event so the web UI shows only
+      // the verified refusal (not the unverified streamed tokens), and
+      // orchestrateOnce returns only the refusal to Discord.
       const postCheck = validateGrounding(finalAnswer, sources.length);
       if (!postCheck.ok && !isRefusalOrTrivial(finalAnswer)) {
-        finalAnswer = `\n\n⚠️  Correction: the streamed answer above failed citation validation (${postCheck.reason}). Treat it as untrusted; the verified answer is: I cannot answer with confidence. Please rephrase or check the portal directly.`;
-        emit({ type: 'token', text: finalAnswer });
         finalAnswer = `I cannot answer that with confidence — ${postCheck.reason}. Please rephrase the question, or check the portal directly for the relevant case/client.`;
+        emit({ type: 'replace', text: finalAnswer });
       }
     } catch (streamErr) {
       console.warn('[orchestrator] streaming failed, falling back to single emit:', (streamErr as Error)?.message);
@@ -372,15 +372,21 @@ export async function orchestrateOnce(input: OrchestrateInput): Promise<{
   const tools: string[] = [];
   let errored: string | null = null;
 
+  let replaced: string | null = null;
   await orchestrate(input, (e) => {
     if (e.type === 'thread') thread_id = e.thread_id;
     else if (e.type === 'token') answer += e.text;
+    else if (e.type === 'replace') replaced = e.text;
     else if (e.type === 'sources') sources = e.sources;
     else if (e.type === 'step') tools.push(e.tool);
     else if (e.type === 'done') { tokens_in = e.tokens_in; tokens_out = e.tokens_out; }
     else if (e.type === 'error') errored = e.message;
   });
   if (errored) throw new Error(errored);
+  // Replace event wins: the streamed text failed post-stream grounding
+  // validation and must NOT be returned to the Discord caller. Surface only
+  // the verified refusal/replacement.
+  if (replaced) answer = replaced;
   return { answer, sources, thread_id, tokens_in, tokens_out, tools };
 }
 

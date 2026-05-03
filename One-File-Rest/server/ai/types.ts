@@ -55,6 +55,7 @@ export type StreamEvent =
   | { type: 'step'; tool: string; args?: any }
   | { type: 'tool_result'; tool: string; ok: boolean; summary?: string }
   | { type: 'token'; text: string }
+  | { type: 'replace'; text: string }
   | { type: 'sources'; sources: Source[] }
   | { type: 'done'; tokens_in: number; tokens_out: number; duration_ms: number }
   | { type: 'error'; message: string };

@@ -173,6 +173,7 @@ export default function AskElitePanel() {
             }
             if (data.type === 'sources') return { ...m, sources: data.sources };
             if (data.type === 'token') return { ...m, content: m.content + data.text };
+            if (data.type === 'replace') return { ...m, content: data.text };
             if (data.type === 'done') return { ...m, pending: false };
             if (data.type === 'error') return { ...m, content: data.message, errored: true, pending: false };
             return m;

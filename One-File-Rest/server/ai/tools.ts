@@ -40,9 +40,16 @@ const searchCases: ToolDef = {
     properties: {
       status: { type: 'string', description: 'Optional case status filter (pending|intake|profile_built|appeal_drafted|appeal_submitted|awaiting_tiktok|response_received|won|denied|escalated|closed).' },
       client_discord_id: { type: 'string', description: 'Optional client Discord snowflake.' },
+      client_query: { type: 'string', description: 'Optional client name/username ILIKE — matches users.discord_username and cases.account_username.' },
       violation_type: { type: 'string', description: 'Optional violation_type ILIKE filter.' },
       query: { type: 'string', description: 'Optional free-text search across description / notes / account username.' },
       open_only: { type: 'boolean', description: 'When true, exclude won/denied/closed.' },
+      created_after_days: { type: 'integer', description: 'Only cases created in the last N days.' },
+      created_before_days: { type: 'integer', description: 'Only cases created MORE than N days ago.' },
+      updated_within_days: { type: 'integer', description: 'Only cases updated in the last N days.' },
+      no_reply_days: { type: 'integer', description: 'Only cases where the client (sender_type=client) has not posted a portal message in the last N days.' },
+      deadline_within_days: { type: 'integer', description: 'Only cases whose appeal_deadline is within the next N days (and not past).' },
+      assigned_staff_id: { type: 'string', description: 'Optional staff Discord ID to filter by case owner.' },
       limit: { type: 'integer', description: 'Max results, default 10, hard cap 25.' },
     },
   },
@@ -53,16 +60,33 @@ const searchCases: ToolDef = {
     let i = 1;
     if (a.status) { where.push(`c.status = $${i++}`); params.push(a.status); }
     if (a.client_discord_id) { where.push(`c.user_discord_id = $${i++}`); params.push(a.client_discord_id); }
+    if (a.client_query) {
+      where.push(`(u.discord_username ILIKE $${i} OR c.account_username ILIKE $${i})`);
+      params.push(`%${a.client_query}%`); i++;
+    }
     if (a.violation_type) { where.push(`c.violation_type ILIKE $${i++}`); params.push(`%${a.violation_type}%`); }
     if (a.query) {
       where.push(`(c.violation_description ILIKE $${i} OR c.account_username ILIKE $${i} OR c.internal_notes ILIKE $${i} OR c.outcome_notes ILIKE $${i})`);
       params.push(`%${a.query}%`); i++;
     }
     if (a.open_only) where.push(`c.status NOT IN ('won','denied','closed')`);
+    if (a.created_after_days) { where.push(`c.created_at > NOW() - ($${i++}::int * INTERVAL '1 day')`); params.push(Number(a.created_after_days)); }
+    if (a.created_before_days) { where.push(`c.created_at < NOW() - ($${i++}::int * INTERVAL '1 day')`); params.push(Number(a.created_before_days)); }
+    if (a.updated_within_days) { where.push(`c.updated_at > NOW() - ($${i++}::int * INTERVAL '1 day')`); params.push(Number(a.updated_within_days)); }
+    if (a.deadline_within_days) {
+      where.push(`c.appeal_deadline IS NOT NULL AND c.appeal_deadline <= NOW() + ($${i++}::int * INTERVAL '1 day') AND c.appeal_deadline >= NOW()`);
+      params.push(Number(a.deadline_within_days));
+    }
+    if (a.assigned_staff_id) { where.push(`c.staff_assigned_id = $${i++}`); params.push(a.assigned_staff_id); }
+    if (a.no_reply_days) {
+      where.push(`NOT EXISTS (SELECT 1 FROM messages m WHERE m.case_id = c.id AND m.sender_type = 'client' AND m.created_at > NOW() - ($${i++}::int * INTERVAL '1 day'))`);
+      params.push(Number(a.no_reply_days));
+    }
     const sql = `
       SELECT c.id, c.user_discord_id, u.discord_username, c.account_username,
              c.violation_type, c.status, c.priority, c.appeal_deadline,
-             c.staff_assigned_id, c.created_at, LEFT(c.violation_description, 300) AS desc
+             c.staff_assigned_id, c.created_at, c.updated_at, LEFT(c.violation_description, 300) AS desc,
+             (SELECT MAX(m2.created_at) FROM messages m2 WHERE m2.case_id = c.id AND m2.sender_type = 'client') AS last_client_reply_at
         FROM cases c
         LEFT JOIN users u ON u.discord_id = c.user_discord_id
         ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
