@@ -1,19 +1,57 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { groqText, groqVision } from '../services/groq.js';
+import { validate } from '../middleware/index.js';
+import { emptyBodySchema , emptyQuerySchema, emptyParamsSchema} from '../../shared/schemas.js';
 
 const router = Router();
 
-function groqError(err: any, res: Response) {
+const GenerateAppealBody = z.object({
+  case_id: z.coerce.number().int().positive().optional(),
+  violation_type: z.string().max(120).optional(),
+  platform: z.string().max(80).optional(),
+  account_age: z.string().max(80).optional(),
+  previous_violations: z.union([z.boolean(), z.coerce.number()]).optional(),
+  business_type: z.string().max(120).optional(),
+  additional_context: z.string().max(5000).optional(),
+}).strict();
+const CaseSummaryBody = z.object({
+  case_id: z.coerce.number().int().positive().optional(),
+  caseData: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+const AnalyzeViolationBody = z.object({
+  violation_type: z.string().min(1).max(200),
+  violation_description: z.string().max(5000).optional(),
+  platform: z.string().max(80).optional(),
+  account_history: z.string().max(5000).optional(),
+}).strict();
+const AnalyzeImageBody = z.object({
+  base64: z.string().max(20_000_000).optional(),
+  image_base64: z.string().max(20_000_000).optional(),
+  mimeType: z.string().max(80).optional(),
+  image_url: z.string().url().max(2000).optional(),
+  case_id: z.coerce.number().int().positive().optional(),
+}).strict();
+const PolicyExplainerBody = z.object({
+  policy_text: z.string().max(5000).optional(),
+  violation_type: z.string().max(200).optional(),
+}).strict();
+const EnhanceTemplateBody = z.object({
+  template_body: z.string().min(1).max(20_000),
+  category: z.string().max(120).optional(),
+}).strict();
+
+function groqError(err: any, req: Request, res: Response): Response {
   const msg = err?.message || 'AI request failed';
   if (msg.includes('GROQ_API_KEY')) {
-    return res.status(503).json({ error: 'AI features unavailable — add GROQ_API_KEY to Secrets.' });
+    return res.status(503).json({ error: { code: 'unavailable', message: 'AI features unavailable — add GROQ_API_KEY to Secrets.', requestId: req.id } });
   }
-  res.status(500).json({ error: msg });
+  return res.status(500).json({ error: { code: 'internal', message: msg, requestId: req.id } });
 }
 
 // ─── Generate Appeal Letter ───────────────────────────────────────────────
-router.post('/generate-appeal', async (req: Request, res: Response) => {
+router.post('/generate-appeal', validate({ body: GenerateAppealBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { case_id, violation_type, platform, account_age, previous_violations, business_type, additional_context } = req.body;
 
@@ -54,12 +92,12 @@ Use formal business language. Be specific and factual. Do NOT use generic templa
       userMessage: `Write a TikTok Shop violation appeal letter for: ${context}`,
       maxTokens: 1500,
     });
-    res.json({ draft });
-  } catch (err) { groqError(err, res); }
+    return res.json({ draft });
+  } catch (err) { return groqError(err, req, res); }
 });
 
 // ─── Case Summary ─────────────────────────────────────────────────────────
-router.post('/case-summary', async (req: Request, res: Response) => {
+router.post('/case-summary', validate({ body: CaseSummaryBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { case_id, caseData } = req.body;
     let data = caseData;
@@ -77,19 +115,19 @@ router.post('/case-summary', async (req: Request, res: Response) => {
       );
       data = r.rows[0];
     }
-    if (!data) return res.status(400).json({ error: 'No case data provided' });
+    if (!data) return res.status(400).json({ error: { code: 'bad_request', message: 'No case data provided', requestId: req.id } });
 
     const summary = await groqText({
       systemPrompt: 'You are a TikTok Shop case analyst. Provide concise, actionable case summaries for staff review. Include: current situation, key facts, recommended next action, risk level.',
       userMessage: `Summarize this TikTok violation case: ${JSON.stringify(data, null, 2)}`,
       maxTokens: 800,
     });
-    res.json({ summary });
-  } catch (err) { groqError(err, res); }
+    return res.json({ summary });
+  } catch (err) { return groqError(err, req, res); }
 });
 
 // ─── Analyze Violation ────────────────────────────────────────────────────
-router.post('/analyze-violation', async (req: Request, res: Response) => {
+router.post('/analyze-violation', validate({ body: AnalyzeViolationBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { violation_type, violation_description, platform, account_history } = req.body;
 
@@ -119,19 +157,19 @@ Return ONLY valid JSON, no explanation.`,
       analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: result };
     } catch { analysis = { raw: result }; }
 
-    res.json({ analysis });
-  } catch (err) { groqError(err, res); }
+    return res.json({ analysis });
+  } catch (err) { return groqError(err, req, res); }
 });
 
 // ─── Analyze Image ────────────────────────────────────────────────────────
-router.post('/analyze-image', async (req: Request, res: Response) => {
+router.post('/analyze-image', validate({ body: AnalyzeImageBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { base64, mimeType, image_base64, image_url, case_id } = req.body;
     const b64 = base64 || image_base64;
     const mt = mimeType || 'image/jpeg';
 
     if (!b64 && !image_url) {
-      return res.status(400).json({ error: 'base64 (with mimeType) or image_url required' });
+      return res.status(400).json({ error: { code: 'bad_request', message: 'base64 (with mimeType) or image_url required', requestId: req.id } });
     }
 
     const imageSource = image_url || `data:${mt};base64,${b64}`;
@@ -182,12 +220,12 @@ Return ONLY valid JSON, no commentary.`,
       } catch (dbErr) { console.warn('Could not save analysis to evidence:', dbErr); }
     }
 
-    res.json({ analysis });
-  } catch (err) { groqError(err, res); }
+    return res.json({ analysis });
+  } catch (err) { return groqError(err, req, res); }
 });
 
 // ─── Bulk Case Analyzer ───────────────────────────────────────────────────
-router.post('/bulk-analyze', async (req: Request, res: Response) => {
+router.post('/bulk-analyze', validate({ body: emptyBodySchema, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const casesResult = await pool.query(
       `SELECT c.id, c.account_username, c.violation_type, c.status, c.priority,
@@ -225,15 +263,15 @@ Return ONLY a valid JSON array.`,
       rankings = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
     } catch { rankings = []; }
 
-    res.json({ rankings, total_analyzed: casesResult.rows.length });
-  } catch (err) { groqError(err, res); }
+    return res.json({ rankings, total_analyzed: casesResult.rows.length });
+  } catch (err) { return groqError(err, req, res); }
 });
 
 // ─── Policy Explainer ─────────────────────────────────────────────────────
-router.post('/policy-explainer', async (req: Request, res: Response) => {
+router.post('/policy-explainer', validate({ body: PolicyExplainerBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { policy_text, violation_type } = req.body;
-    if (!policy_text && !violation_type) return res.status(400).json({ error: 'policy_text or violation_type required' });
+    if (!policy_text && !violation_type) return res.status(400).json({ error: { code: 'bad_request', message: 'policy_text or violation_type required', requestId: req.id } });
 
     const [explanation, affectedCases] = await Promise.all([
       groqText({
@@ -248,26 +286,25 @@ router.post('/policy-explainer', async (req: Request, res: Response) => {
         : Promise.resolve({ rows: [{ count: 0 }] }),
     ]);
 
-    res.json({
+    return res.json({
       explanation,
       affected_cases: parseInt(String(affectedCases.rows[0]?.count || 0)),
     });
-  } catch (err) { groqError(err, res); }
+  } catch (err) { return groqError(err, req, res); }
 });
 
 // ─── AI Enhance Template ──────────────────────────────────────────────────
-router.post('/enhance-template', async (req: Request, res: Response) => {
+router.post('/enhance-template', validate({ body: EnhanceTemplateBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { template_body, category } = req.body;
-    if (!template_body) return res.status(400).json({ error: 'template_body required' });
 
     const enhanced = await groqText({
       systemPrompt: 'You are a professional TikTok appeal writing expert. Enhance templates to be more persuasive, professional, and effective while maintaining their structure and variables.',
       userMessage: `Enhance this ${category || 'appeal'} template to be more professional and persuasive. Keep all {variables} exactly as-is. Preserve the overall structure but improve the language, tone, and persuasiveness:\n\n${template_body}`,
       maxTokens: 1500,
     });
-    res.json({ enhanced });
-  } catch (err) { groqError(err, res); }
+    return res.json({ enhanced });
+  } catch (err) { return groqError(err, req, res); }
 });
 
 export default router;

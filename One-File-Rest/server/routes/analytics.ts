@@ -1,14 +1,18 @@
 import { Router, Request, Response } from 'express';
 import pool from '../db/client.js';
+import { validate } from '../middleware/index.js';
+import { discordIdSchema, emptyQuerySchema, emptyParamsSchema } from '../../shared/schemas.js';
+import { z } from 'zod';
 
 const router = Router();
+const DiscordIdParam = z.object({ discordId: discordIdSchema }).strict();
 
 /**
  * GET /api/analytics - Admin dashboard stats
  */
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const [clientsResult, casesResult, revenueResult] = await Promise.all([
+    const [clientsResult, casesResult, _revenueResult] = await Promise.all([
       pool.query(`SELECT COUNT(*) as count FROM users`),
       pool.query(`
         SELECT
@@ -19,7 +23,7 @@ router.get('/', async (req: Request, res: Response) => {
       pool.query(`SELECT COALESCE(SUM(0), 0) as total FROM subscriptions WHERE status = 'active'`),
     ]);
 
-    res.json({
+    return res.json({
       totalClients: parseInt(clientsResult.rows[0].count),
       activeCases: parseInt(casesResult.rows[0].active_cases),
       wonCases: parseInt(casesResult.rows[0].won_cases),
@@ -27,15 +31,15 @@ router.get('/', async (req: Request, res: Response) => {
       avgComplianceScore: 0,
     });
   } catch (err) {
-    console.error('Analytics error:', err);
-    res.status(500).json({ error: 'Failed to fetch analytics' });
+    console.error('Analytics error:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch analytics', requestId: req.id } });
   }
 });
 
 /**
  * GET /api/analytics/clients - List all clients with case counts
  */
-router.get('/clients', async (req: Request, res: Response) => {
+router.get('/clients', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const result = await pool.query(`
       SELECT
@@ -59,17 +63,17 @@ router.get('/clients', async (req: Request, res: Response) => {
       compliance_score: 0,
     }));
 
-    res.json(clients);
+    return res.json(clients);
   } catch (err) {
-    console.error('Clients analytics error:', err);
-    res.status(500).json({ error: 'Failed to fetch clients' });
+    console.error('Clients analytics error:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch clients', requestId: req.id } });
   }
 });
 
 /**
  * GET /api/analytics/clients/:discordId - Single client profile
  */
-router.get('/clients/:discordId', async (req: Request, res: Response) => {
+router.get('/clients/:discordId', validate({ params: DiscordIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const { discordId } = req.params;
 
@@ -80,7 +84,7 @@ router.get('/clients/:discordId', async (req: Request, res: Response) => {
     );
 
     if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Client not found' });
+      return res.status(404).json({ error: { code: 'not_found', message: 'Client not found', requestId: req.id } });
     }
 
     const user = userResult.rows[0];
@@ -99,7 +103,7 @@ router.get('/clients/:discordId', async (req: Request, res: Response) => {
       [discordId]
     );
 
-    res.json({
+    return res.json({
       ...user,
       total_cases: parseInt(statsResult.rows[0].total_cases),
       won_cases: parseInt(statsResult.rows[0].won_cases),
@@ -107,15 +111,15 @@ router.get('/clients/:discordId', async (req: Request, res: Response) => {
       cases: casesResult.rows,
     });
   } catch (err) {
-    console.error('Client profile error:', err);
-    res.status(500).json({ error: 'Failed to fetch client profile' });
+    console.error('Client profile error:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch client profile', requestId: req.id } });
   }
 });
 
 /**
  * GET /api/analytics/staff - List all staff members
  */
-router.get('/staff', async (req: Request, res: Response) => {
+router.get('/staff', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const result = await pool.query(`
       SELECT
@@ -130,10 +134,10 @@ router.get('/staff', async (req: Request, res: Response) => {
       ORDER BY s.created_at DESC
     `);
 
-    res.json(result.rows);
+    return res.json(result.rows);
   } catch (err) {
-    console.error('Staff analytics error:', err);
-    res.status(500).json({ error: 'Failed to fetch staff' });
+    console.error('Staff analytics error:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch staff', requestId: req.id } });
   }
 });
 

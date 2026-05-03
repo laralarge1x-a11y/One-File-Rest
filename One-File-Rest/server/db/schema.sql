@@ -318,6 +318,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(is_read) WHERE is_rea
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_discord_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_evidence_case ON evidence(case_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_discord_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor_recent ON audit_log(actor_discord_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_type, target_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_webhook_logs_user ON webhook_logs(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan) WHERE plan IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_plan_expiry ON users(plan_expiry) WHERE plan_expiry IS NOT NULL;

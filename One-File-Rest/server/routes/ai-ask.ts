@@ -9,18 +9,35 @@
 // All routes are mounted behind requireStaff in server/index.ts.
 
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
+import { emptyQuerySchema , emptyParamsSchema} from '../../shared/schemas.js';
 import { logAudit } from '../services/webhook.js';
 import { orchestrate, orchestrateOnce, _stats } from '../ai/orchestrator.js';
+import { validate } from '../middleware/index.js';
 
 const router = Router();
 
+const AskBody = z.object({
+  question: z.string().min(2).max(8000),
+  thread_id: z.coerce.number().int().positive().optional().nullable(),
+  surface: z.enum(['web', 'discord']).optional(),
+  context_hint: z.object({
+    case_id: z.coerce.number().int().positive().optional(),
+    client_discord_id: z.string().max(40).optional(),
+  }).partial().optional(),
+}).strict();
+const ThreadIdParam = z.object({ id: z.coerce.number().int().positive() }).strict();
+const ThreadPatchBody = z.object({
+  title: z.string().max(200).optional(),
+  pinned: z.boolean().optional(),
+  shared_with: z.array(z.string().max(40)).max(25).optional(),
+}).strict();
+const CaseIdParam = z.object({ caseId: z.coerce.number().int().positive() }).strict();
+
 // ─── POST /ask  (SSE) ─────────────────────────────────────────────────────
-router.post('/ask', async (req: Request, res: Response) => {
-  const { question, thread_id, surface, context_hint } = req.body || {};
-  if (!question || typeof question !== 'string' || question.trim().length < 2) {
-    return res.status(400).json({ error: 'question required (min 2 chars)' });
-  }
+router.post('/ask', validate({ body: AskBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  const { question, thread_id, surface, context_hint } = req.body;
   const staff = req.user!;
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -33,10 +50,8 @@ router.post('/ask', async (req: Request, res: Response) => {
     try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch {}
   };
 
-  // Heartbeat every 15s so proxies don't kill the connection.
   const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 15000);
 
-  // If the client disconnects mid-stream, abandon work after current step.
   let aborted = false;
   req.on('close', () => { aborted = true; });
 
@@ -67,12 +82,13 @@ router.post('/ask', async (req: Request, res: Response) => {
       if (!aborted) send(e);
     });
 
-    logAudit({
+    if (auditThreadId) logAudit({
       actorDiscordId: staff.discord_id,
       action: 'ai_ask',
       targetType: 'ai_thread',
-      targetId: auditThreadId ?? undefined,
+      targetId: auditThreadId,
       details: {
+        request_id: req.id,
         surface: surface || 'web',
         q_preview: question.slice(0, 240),
         tools: auditTools,
@@ -82,15 +98,16 @@ router.post('/ask', async (req: Request, res: Response) => {
       },
     }).catch(() => {});
   } catch (err: any) {
-    send({ type: 'error', message: err?.message || 'ask failed' });
+    console.error('[ai/ask]', { req_id: req.id, err: err?.message });
+    send({ type: 'error', message: 'ask failed' });
   } finally {
     clearInterval(hb);
     try { res.end(); } catch {}
   }
+  return;
 });
 
-// ─── GET /threads ─────────────────────────────────────────────────────────
-router.get('/threads', async (req: Request, res: Response) => {
+router.get('/threads', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const me = req.user!.discord_id;
     const rows = (await pool.query(
@@ -103,14 +120,14 @@ router.get('/threads', async (req: Request, res: Response) => {
          ORDER BY updated_at DESC LIMIT 50`,
       [me]
     )).rows;
-    res.json({ threads: rows });
+    return res.json({ threads: rows });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'failed' });
+    console.error('[ai/threads]', { req_id: req.id, err: err?.message });
+    return res.status(500).json({ error: { code: 'internal', message: 'failed', requestId: req.id } });
   }
 });
 
-// ─── GET /threads/:id ─────────────────────────────────────────────────────
-router.get('/threads/:id', async (req: Request, res: Response) => {
+router.get('/threads/:id', validate({ params: ThreadIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     const me = req.user!.discord_id;
@@ -120,62 +137,93 @@ router.get('/threads/:id', async (req: Request, res: Response) => {
            AND (owner_discord_id = $2 OR $2 = ANY(COALESCE(shared_with, ARRAY[]::text[])))`,
       [id, me]
     )).rows[0];
-    if (!t) return res.status(404).json({ error: 'not found' });
+    if (!t) return res.status(404).json({ error: { code: 'not_found', message: 'not found', requestId: req.id } });
     const messages = (await pool.query(
       `SELECT id, role, content, sources, tool_calls, tokens_in, tokens_out, created_at
          FROM ai_messages WHERE thread_id = $1 ORDER BY created_at ASC`,
       [id]
     )).rows;
-    res.json({ thread: t, messages, viewer_role: t.owner_discord_id === me ? 'owner' : 'shared' });
+    return res.json({ thread: t, messages, viewer_role: t.owner_discord_id === me ? 'owner' : 'shared' });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'failed' });
+    console.error('[ai/threads/:id]', { req_id: req.id, err: err?.message });
+    return res.status(500).json({ error: { code: 'internal', message: 'failed', requestId: req.id } });
   }
 });
 
-router.patch('/threads/:id', async (req: Request, res: Response) => {
+router.patch('/threads/:id', validate({ params: ThreadIdParam, body: ThreadPatchBody, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { title, pinned, shared_with } = req.body || {};
+    const { title, pinned, shared_with } = req.body;
     const sets: string[] = [];
     const params: unknown[] = [];
     let i = 1;
     if (typeof title === 'string') { sets.push(`title = $${i++}`); params.push(title.slice(0, 200)); }
     if (typeof pinned === 'boolean') { sets.push(`pinned = $${i++}`); params.push(pinned); }
     if (Array.isArray(shared_with)) { sets.push(`shared_with = $${i++}`); params.push(shared_with.slice(0, 25).map(String)); }
-    if (sets.length === 0) return res.status(400).json({ error: 'no fields to update' });
+    if (sets.length === 0) return res.status(400).json({ error: { code: 'bad_request', message: 'no fields to update', requestId: req.id } });
+    const beforeR = await pool.query(
+      `SELECT title, pinned, shared_with FROM ai_threads WHERE id = $1 AND owner_discord_id = $2`,
+      [id, req.user!.discord_id]
+    );
+    if (beforeR.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'not found or not owner', requestId: req.id } });
     params.push(id, req.user!.discord_id);
     const r = await pool.query(
       `UPDATE ai_threads SET ${sets.join(', ')}, updated_at = NOW()
          WHERE id = $${i++} AND owner_discord_id = $${i} RETURNING *`,
       params
     );
-    if (r.rowCount === 0) return res.status(404).json({ error: 'not found or not owner' });
-    res.json({ thread: r.rows[0] });
+    const after = r.rows[0];
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
+    for (const k of ['title', 'pinned', 'shared_with'] as const) {
+      const incoming = (req.body as Record<string, unknown>)[k];
+      if (incoming !== undefined && JSON.stringify(beforeR.rows[0][k]) !== JSON.stringify(after[k])) {
+        diff[k] = { from: beforeR.rows[0][k], to: after[k] };
+      }
+    }
+    logAudit({
+      actorDiscordId: req.user!.discord_id,
+      action: 'ai_thread_updated',
+      targetType: 'ai_thread',
+      targetId: id,
+      details: { diff },
+    }).catch(console.error);
+    return res.json({ thread: after });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'failed' });
+    console.error('[ai/threads PATCH]', { req_id: req.id, err: err?.message });
+    return res.status(500).json({ error: { code: 'internal', message: 'failed', requestId: req.id } });
   }
 });
 
-router.delete('/threads/:id', async (req: Request, res: Response) => {
+router.delete('/threads/:id', validate({ params: ThreadIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
+    const beforeR = await pool.query(
+      `SELECT title, pinned FROM ai_threads WHERE id = $1 AND owner_discord_id = $2`,
+      [id, req.user!.discord_id]
+    );
     const r = await pool.query(
       `DELETE FROM ai_threads WHERE id = $1 AND owner_discord_id = $2`,
       [id, req.user!.discord_id]
     );
-    res.json({ deleted: r.rowCount });
+    if (r.rowCount && beforeR.rows[0]) {
+      logAudit({
+        actorDiscordId: req.user!.discord_id,
+        action: 'ai_thread_deleted',
+        targetType: 'ai_thread',
+        targetId: id,
+        details: { from: beforeR.rows[0], to: null },
+      }).catch(console.error);
+    }
+    return res.json({ deleted: r.rowCount });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'failed' });
+    console.error('[ai/threads DELETE]', { req_id: req.id, err: err?.message });
+    return res.status(500).json({ error: { code: 'internal', message: 'failed', requestId: req.id } });
   }
 });
 
-// ─── GET /dossier/:caseId ─────────────────────────────────────────────────
-// One-shot AI summary of a case — runs the orchestrator in non-streaming mode
-// with a fixed prompt. Used on the case workspace as an "AI brief" panel.
-router.get('/dossier/:caseId', async (req: Request, res: Response) => {
+router.get('/dossier/:caseId', validate({ params: CaseIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const caseId = Number(req.params.caseId);
-    if (!Number.isFinite(caseId)) return res.status(400).json({ error: 'caseId required' });
     const result = await orchestrateOnce({
       question:
         `Build an executive dossier for case #${caseId}. Cover: client identity, violation, current stage and next required action, deadline risk, evidence completeness, what the client has said in portal vs Discord, prior similar wins, and the recommended next step. Keep it under 250 words.`,
@@ -184,14 +232,14 @@ router.get('/dossier/:caseId', async (req: Request, res: Response) => {
       staffRole: req.user!.role,
       contextHint: { caseId },
     });
-    res.json({ case_id: caseId, ...result });
+    return res.json({ case_id: caseId, ...result });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'dossier failed' });
+    console.error('[ai/dossier]', { req_id: req.id, err: err?.message });
+    return res.status(500).json({ error: { code: 'internal', message: 'dossier failed', requestId: req.id } });
   }
 });
 
-// ─── GET /usage ───────────────────────────────────────────────────────────
-router.get('/usage', async (req: Request, res: Response) => {
+router.get('/usage', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const today = (await pool.query(
       `SELECT COALESCE(SUM(tokens_in + tokens_out), 0)::int AS tokens,
@@ -207,14 +255,15 @@ router.get('/usage', async (req: Request, res: Response) => {
          FROM ai_query_log WHERE created_at > NOW() - INTERVAL '7 days'
          GROUP BY staff_discord_id ORDER BY tokens DESC LIMIT 10`
     )).rows;
-    res.json({
+    return res.json({
       me: today,
       caps: { per_thread: _stats.perThreadCap, daily: _stats.perStafferDailyCap, max_steps: _stats.maxSteps },
       tools_available: _stats.toolCount,
       top_users_7d: allTime,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'failed' });
+    console.error('[ai/usage]', { req_id: req.id, err: err?.message });
+    return res.status(500).json({ error: { code: 'internal', message: 'failed', requestId: req.id } });
   }
 });
 

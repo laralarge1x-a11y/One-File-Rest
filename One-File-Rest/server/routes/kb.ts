@@ -1,10 +1,37 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
+import { validate } from '../middleware/index.js';
+import { idParamSchema, emptyQuerySchema , emptyParamsSchema} from '../../shared/schemas.js';
 
 const router = Router();
 const STAFF = ['support', 'case_manager', 'owner', 'admin'];
 
-router.get('/', async (req: Request, res: Response) => {
+const KbListQuery = z.object({
+  q: z.string().max(200).optional(),
+  category: z.string().max(80).optional(),
+}).strict();
+const KbCreateBody = z.object({
+  slug: z.string().min(1).max(160).regex(/^[a-z0-9-]+$/),
+  title: z.string().min(1).max(300),
+  category: z.string().max(80).optional().nullable(),
+  body_md: z.string().min(1).max(200_000),
+  tags: z.array(z.string().max(60)).max(50).optional(),
+  published: z.boolean().optional(),
+}).strict();
+const KbPatchBody = z.object({
+  title: z.string().min(1).max(300).optional(),
+  category: z.string().max(80).optional().nullable(),
+  body_md: z.string().min(1).max(200_000).optional(),
+  tags: z.array(z.string().max(60)).max(50).optional(),
+  published: z.boolean().optional(),
+}).strict();
+const KbFeedbackBody = z.object({
+  helpful: z.boolean(),
+  note: z.string().max(2000).optional().nullable(),
+}).strict();
+
+router.get('/', validate({ query: KbListQuery, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { q, category } = req.query;
     const isStaff = STAFF.includes(req.user?.role || '');
@@ -21,58 +48,58 @@ router.get('/', async (req: Request, res: Response) => {
          FROM kb_articles ${where} ORDER BY updated_at DESC LIMIT 100`,
       values
     );
-    res.json(r.rows);
+    return res.json(r.rows);
   } catch (err) {
-    console.error('[kb GET]', err);
-    res.status(500).json({ error: 'Failed' });
+    console.error('[kb GET]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.get('/categories', async (_req: Request, res: Response) => {
+router.get('/categories', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT category, COUNT(*)::int as count FROM kb_articles WHERE published = true AND category IS NOT NULL GROUP BY category ORDER BY count DESC`
     );
-    res.json(r.rows);
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json(r.rows);
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
-router.get('/:slug', async (req: Request, res: Response) => {
+const KbSlugParam = z.object({ slug: z.string().min(1).max(160).regex(/^[a-z0-9-]+$/) }).strict();
+router.get('/:slug', validate({ params: KbSlugParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const isStaff = STAFF.includes(req.user?.role || '');
     const r = await pool.query(
       `SELECT * FROM kb_articles WHERE slug = $1 ${isStaff ? '' : 'AND published = true'}`,
       [req.params.slug]
     );
-    if (r.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (r.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Not found', requestId: req.id } });
     pool.query('UPDATE kb_articles SET view_count = view_count + 1 WHERE id = $1', [r.rows[0].id]).catch(() => {});
-    res.json(r.rows[0]);
+    return res.json(r.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Failed' });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
-  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: 'Forbidden' });
+router.post('/', validate({ body: KbCreateBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
   try {
-    const { slug, title, category, body_md, tags, published } = req.body || {};
-    if (!slug || !title || !body_md) return res.status(400).json({ error: 'slug, title, body_md required' });
+    const { slug, title, category, body_md, tags, published } = req.body;
     const r = await pool.query(
       `INSERT INTO kb_articles (slug, title, category, body_md, tags, published, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [slug, title, category || null, body_md, tags || [], published !== false, req.user!.discord_id]
     );
-    res.status(201).json(r.rows[0]);
+    return res.status(201).json(r.rows[0]);
   } catch (err: any) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Slug already exists' });
-    res.status(500).json({ error: 'Failed' });
+    if (err.code === '23505') return res.status(409).json({ error: { code: 'conflict', message: 'Slug already exists', requestId: req.id } });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.patch('/:id', async (req: Request, res: Response) => {
-  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: 'Forbidden' });
+router.patch('/:id', validate({ params: idParamSchema, body: KbPatchBody, query: emptyQuerySchema }), async (req: Request, res: Response) => {
+  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
   try {
-    const { title, category, body_md, tags, published } = req.body || {};
+    const { title, category, body_md, tags, published } = req.body;
     const r = await pool.query(
       `UPDATE kb_articles SET
          title = COALESCE($1, title),
@@ -84,27 +111,27 @@ router.patch('/:id', async (req: Request, res: Response) => {
        WHERE id = $6 RETURNING *`,
       [title ?? null, category ?? null, body_md ?? null, tags ?? null, typeof published === 'boolean' ? published : null, req.params.id]
     );
-    res.json(r.rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json(r.rows[0]);
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
-router.delete('/:id', async (req: Request, res: Response) => {
-  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: 'Forbidden' });
+router.delete('/:id', validate({ params: idParamSchema, query: emptyQuerySchema }), async (req: Request, res: Response) => {
+  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
   try {
     await pool.query('DELETE FROM kb_articles WHERE id = $1', [req.params.id]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
-router.post('/:id/feedback', async (req: Request, res: Response) => {
+router.post('/:id/feedback', validate({ params: idParamSchema, body: KbFeedbackBody, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
-    const { helpful, note } = req.body || {};
+    const { helpful, note } = req.body;
     await pool.query(
       `INSERT INTO kb_article_feedback (article_id, user_discord_id, helpful, note) VALUES ($1, $2, $3, $4)`,
       [req.params.id, req.user!.discord_id, !!helpful, note || null]
     );
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
 export default router;

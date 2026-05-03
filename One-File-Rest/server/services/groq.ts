@@ -28,7 +28,7 @@ export interface GroqVisionOptions {
   maxTokens?: number;
 }
 
-export interface GroqJSONOptions<T> {
+export interface GroqJSONOptions<_T = unknown> {
   systemPrompt: string;
   userMessage: string;
   temperature?: number;

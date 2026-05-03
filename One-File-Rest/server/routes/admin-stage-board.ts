@@ -1,12 +1,52 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { fireWebhook, logAudit } from '../services/webhook.js';
 import { advanceCaseTimeline } from '../services/timeline.js';
 import { createNotification, emitCaseStatusChanged } from '../services/notifications.js';
 import {
-  STAGES, STAGE_IDS, statusToStage, stageToStatus, getStageMeta,
+  STAGES, statusToStage, stageToStatus, getStageMeta,
   type StageId,
 } from '../../shared/stages.js';
+import { validate } from '../middleware/index.js';
+import { stageEnum, discordIdSchema, emptyQuerySchema , emptyParamsSchema} from '../../shared/schemas.js';
+
+const CaseIdsBody = z.object({ caseIds: z.array(z.coerce.number().int().positive()).min(1).max(500) }).strict();
+const BulkMoveBody = CaseIdsBody.extend({ toStage: stageEnum });
+const MoveBody = z.object({
+  caseId: z.coerce.number().int().positive(),
+  toStage: stageEnum,
+  note: z.string().max(2000).optional().nullable(),
+}).strict();
+const BulkAssignBody = CaseIdsBody.extend({ staffDiscordId: discordIdSchema.nullable() });
+const BulkSnoozeBody = CaseIdsBody.extend({
+  hours: z.coerce.number().int().min(1).max(24 * 30),
+  reason: z.string().max(500).optional().nullable(),
+}).strict();
+const BulkNudgeBody = CaseIdsBody.extend({ message: z.string().max(280).optional() });
+const StageBoardQuery = z.object({
+  resolvedLimit: z.coerce.number().int().min(1).max(200).optional(),
+  plan: z.string().max(60).optional(),
+  assigned: z.string().max(40).optional(),
+  priority: z.enum(['critical', 'high', 'normal']).optional(),
+  ageDays: z.coerce.number().int().min(0).max(365).optional(),
+  mine: z.enum(['0', '1']).optional(),
+}).strict();
+const CaseIdParam = z.object({ caseId: z.coerce.number().int().positive() }).strict();
+const NumIdParam = z.object({ id: z.coerce.number().int().positive() }).strict();
+const SearchQuery = z.object({ q: z.string().max(200).optional() }).strict();
+const SavedViewCreateBody = z.object({
+  name: z.string().min(1).max(120),
+  scope: z.string().max(40).optional(),
+  query: z.record(z.string(), z.unknown()).optional(),
+  pinned: z.boolean().optional(),
+}).strict();
+const SavedViewPatchBody = z.object({
+  name: z.string().min(1).max(120).optional(),
+  query: z.record(z.string(), z.unknown()).optional(),
+  pinned: z.boolean().optional(),
+  sort_order: z.coerce.number().int().optional(),
+}).strict();
 
 interface StageBoardCaseRow {
   id: number;
@@ -34,7 +74,7 @@ const router = Router();
 // Returns all open cases bucketed by canonical stage. Resolved-won and
 // resolved-lost are capped at the most-recent N to keep the payload small;
 // the kanban renders a "view all" link per terminal column.
-router.get('/stage-board', async (req: Request, res: Response) => {
+router.get('/stage-board', validate({ query: StageBoardQuery, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const resolvedLimit = Math.min(parseInt(String(req.query.resolvedLimit || '25')) || 25, 200);
     // Filters: plan=plus, assigned=<discord_id>|me|unassigned, priority=critical|high,
@@ -154,13 +194,13 @@ router.get('/stage-board', async (req: Request, res: Response) => {
       return false;
     }).map((r) => ({ ...r, stage: (r.stage as StageId) || statusToStage(r.status, (r as { outcome?: string | null }).outcome) }));
 
-    res.json({
+    return res.json({
       stages: STAGES.map((s) => ({ ...s, total: totals[s.id], cases: buckets[s.id] })),
       smart: { needs_my_attention: myAttention },
     });
   } catch (err) {
-    console.error('[admin/stage-board GET]', err);
-    res.status(500).json({ error: 'Failed to load stage board' });
+    console.error('[admin/stage-board GET]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to load stage board', requestId: req.id } });
   }
 });
 
@@ -168,14 +208,8 @@ router.get('/stage-board', async (req: Request, res: Response) => {
 // Bulk drag/select on the kanban — body: { caseIds: number[], toStage }.
 // Calls the single-move logic per id so the audit log + notifications +
 // timeline update are identical to the per-card flow.
-router.post('/stage-board/bulk-move', async (req: Request, res: Response) => {
-  const { caseIds, toStage } = req.body || {};
-  if (!Array.isArray(caseIds) || caseIds.length === 0) {
-    return res.status(400).json({ error: 'caseIds[] required' });
-  }
-  if (!(STAGE_IDS as readonly string[]).includes(String(toStage))) {
-    return res.status(400).json({ error: 'invalid toStage' });
-  }
+router.post('/stage-board/bulk-move', validate({ body: BulkMoveBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  const { caseIds, toStage } = req.body;
   const target = toStage as StageId;
   const newStatus = stageToStatus(target);
   const staffId = req.user!.discord_id;
@@ -245,20 +279,17 @@ router.post('/stage-board/bulk-move', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({ ok: true, moved, unchanged, failures, toStage: target });
+  return res.json({ ok: true, moved, unchanged, failures, toStage: target });
 });
 
 // ─── POST /api/admin/stage-board/move ─────────────────────────────────────
 // Drag-and-drop endpoint. Body: { caseId, toStage, note? }.
 // Idempotent: a no-op move (same stage) returns 200 without writing history.
-router.post('/stage-board/move', async (req: Request, res: Response) => {
-  const { caseId, toStage, note } = req.body || {};
+router.post('/stage-board/move', validate({ body: MoveBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  const { caseId, toStage, note } = req.body;
   const staffId = req.user!.discord_id;
 
-  const id = parseInt(String(caseId));
-  if (!id || !(STAGE_IDS as readonly string[]).includes(String(toStage))) {
-    return res.status(400).json({ error: 'caseId and a valid toStage are required' });
-  }
+  const id = caseId as number;
   const targetStage = toStage as StageId;
   const newStatus = stageToStatus(targetStage);
 
@@ -270,7 +301,7 @@ router.post('/stage-board/move', async (req: Request, res: Response) => {
     const before = await client.query('SELECT * FROM cases WHERE id = $1 FOR UPDATE', [id]);
     if (before.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Case not found' });
+      return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
     }
     const oldCase = before.rows[0];
     const oldStage = statusToStage(oldCase.status, oldCase.outcome);
@@ -355,11 +386,11 @@ router.post('/stage-board/move', async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ ok: true, case: { ...updated, stage: targetStage }, fromStage: oldStage, toStage: targetStage });
+    return res.json({ ok: true, case: { ...updated, stage: targetStage }, fromStage: oldStage, toStage: targetStage });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* ignored */ }
-    console.error('[admin/stage-board/move POST]', err);
-    res.status(500).json({ error: 'Failed to move case' });
+    console.error('[admin/stage-board/move POST]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to move case', requestId: req.id } });
   } finally {
     client.release();
   }
@@ -368,15 +399,19 @@ router.post('/stage-board/move', async (req: Request, res: Response) => {
 // ─── POST /api/admin/stage-board/bulk-assign ─────────────────────────────
 // Body: { caseIds: number[], staffDiscordId: string | null }
 // `null` clears the assignment. Audit + notification per id.
-router.post('/stage-board/bulk-assign', async (req: Request, res: Response) => {
-  const { caseIds, staffDiscordId } = req.body || {};
-  if (!Array.isArray(caseIds) || caseIds.length === 0) {
-    return res.status(400).json({ error: 'caseIds[] required' });
-  }
-  const target: string | null = staffDiscordId ? String(staffDiscordId) : null;
+router.post('/stage-board/bulk-assign', validate({ body: BulkAssignBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  const { caseIds, staffDiscordId } = req.body;
+  const target: string | null = staffDiscordId || null;
   const actor = req.user!.discord_id;
   let assigned = 0;
   const failures: Array<{ id: number; error: string }> = [];
+  // Snapshot prior assignments so per-id audit rows record real diff.
+  const intIds = caseIds.map((x: number) => parseInt(String(x))).filter(Number.isFinite);
+  const beforeRows = (await pool.query(
+    `SELECT id, staff_assigned_id FROM cases WHERE id = ANY($1::int[])`,
+    [intIds],
+  )).rows as Array<{ id: number; staff_assigned_id: string | null }>;
+  const beforeMap = new Map(beforeRows.map((r) => [r.id, r.staff_assigned_id]));
   for (const raw of caseIds) {
     const id = parseInt(String(raw));
     if (!id) { failures.push({ id: raw, error: 'bad id' }); continue; }
@@ -389,7 +424,7 @@ router.post('/stage-board/bulk-assign', async (req: Request, res: Response) => {
       logAudit({
         actorDiscordId: actor, action: 'case_assigned',
         targetType: 'case', targetId: id,
-        details: { staff_discord_id: target, bulk: true },
+        details: { from: beforeMap.get(id) ?? null, to: target, bulk: true },
       }).catch(console.error);
       if (target && target !== actor) {
         createNotification({
@@ -404,20 +439,23 @@ router.post('/stage-board/bulk-assign', async (req: Request, res: Response) => {
       failures.push({ id, error: err instanceof Error ? err.message : 'failed' });
     }
   }
-  res.json({ ok: true, assigned, failures, staffDiscordId: target });
+  return res.json({ ok: true, assigned, failures, staffDiscordId: target });
 });
 
 // ─── POST /api/admin/stage-board/bulk-snooze ─────────────────────────────
 // Body: { caseIds: number[], hours: number, reason?: string }
-router.post('/stage-board/bulk-snooze', async (req: Request, res: Response) => {
-  const { caseIds, hours, reason } = req.body || {};
-  if (!Array.isArray(caseIds) || caseIds.length === 0) {
-    return res.status(400).json({ error: 'caseIds[] required' });
-  }
-  const h = Math.max(1, Math.min(24 * 30, parseInt(String(hours)) || 24));
+router.post('/stage-board/bulk-snooze', validate({ body: BulkSnoozeBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  const { caseIds, hours, reason } = req.body;
+  const h = hours as number;
   const actor = req.user!.discord_id;
   let snoozed = 0;
   const failures: Array<{ id: number; error: string }> = [];
+  const intIds = caseIds.map((x: number) => parseInt(String(x))).filter(Number.isFinite);
+  const beforeRows = (await pool.query(
+    `SELECT id, snoozed_until, snooze_reason FROM cases WHERE id = ANY($1::int[])`,
+    [intIds],
+  )).rows as Array<{ id: number; snoozed_until: string | null; snooze_reason: string | null }>;
+  const beforeMap = new Map(beforeRows.map((r) => [r.id, r]));
   for (const raw of caseIds) {
     const id = parseInt(String(raw));
     if (!id) { failures.push({ id: raw, error: 'bad id' }); continue; }
@@ -427,31 +465,34 @@ router.post('/stage-board/bulk-snooze', async (req: Request, res: Response) => {
             SET snoozed_until = NOW() + ($1 || ' hours')::interval,
                 snooze_reason = $2,
                 updated_at = NOW()
-          WHERE id = $3`,
+          WHERE id = $3 RETURNING snoozed_until`,
         [h, reason || null, id]
       );
       if (r.rowCount === 0) { failures.push({ id, error: 'not found' }); continue; }
+      const before = beforeMap.get(id);
       logAudit({
         actorDiscordId: actor, action: 'case_snoozed',
         targetType: 'case', targetId: id,
-        details: { hours: h, reason: reason || null, bulk: true },
+        details: {
+          hours: h,
+          from: { snoozed_until: before?.snoozed_until ?? null, reason: before?.snooze_reason ?? null },
+          to: { snoozed_until: r.rows[0].snoozed_until, reason: reason || null },
+          bulk: true,
+        },
       }).catch(console.error);
       snoozed++;
     } catch (err) {
       failures.push({ id, error: err instanceof Error ? err.message : 'failed' });
     }
   }
-  res.json({ ok: true, snoozed, hours: h, failures });
+  return res.json({ ok: true, snoozed, hours: h, failures });
 });
 
 // ─── POST /api/admin/stage-board/bulk-nudge ──────────────────────────────
 // Sends a "we're still working on it" notification to every customer in
 // the selection. Audit row per id.
-router.post('/stage-board/bulk-nudge', async (req: Request, res: Response) => {
-  const { caseIds, message } = req.body || {};
-  if (!Array.isArray(caseIds) || caseIds.length === 0) {
-    return res.status(400).json({ error: 'caseIds[] required' });
-  }
+router.post('/stage-board/bulk-nudge', validate({ body: BulkNudgeBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  const { caseIds, message } = req.body;
   const note = String(message || 'Your specialist is actively working on your case.').slice(0, 280);
   const actor = req.user!.discord_id;
   let nudged = 0;
@@ -478,11 +519,11 @@ router.post('/stage-board/bulk-nudge', async (req: Request, res: Response) => {
       console.error('[bulk-nudge]', id, err);
     }
   }
-  res.json({ ok: true, nudged });
+  return res.json({ ok: true, nudged });
 });
 
 // ─── GET /api/admin/stage-board/history/:caseId ───────────────────────────
-router.get('/stage-board/history/:caseId', async (req: Request, res: Response) => {
+router.get('/stage-board/history/:caseId', validate({ params: CaseIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const r = await pool.query(`
       SELECT h.*, u.discord_username AS actor_username, s.name AS actor_name
@@ -493,16 +534,16 @@ router.get('/stage-board/history/:caseId', async (req: Request, res: Response) =
        ORDER BY h.created_at DESC
        LIMIT 100
     `, [req.params.caseId]);
-    res.json({ history: r.rows });
+    return res.json({ history: r.rows });
   } catch (err) {
-    console.error('[admin/stage-board/history]', err);
-    res.status(500).json({ error: 'Failed to load history' });
+    console.error('[admin/stage-board/history]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to load history', requestId: req.id } });
   }
 });
 
 // ─── GET /api/admin/search?q=… — command palette backend ──────────────────
 // Cross-search cases, clients, KB articles, and templates. Used by Cmd+K.
-router.get('/search', async (req: Request, res: Response) => {
+router.get('/search', validate({ query: SearchQuery, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   const q = String(req.query.q || '').trim();
   if (q.length < 2) return res.json({ cases: [], clients: [], kb: [], templates: [] });
   const like = `%${q}%`;
@@ -536,7 +577,7 @@ router.get('/search', async (req: Request, res: Response) => {
          WHERE name ILIKE $1 OR discord_id ILIKE $1
          ORDER BY name ASC LIMIT 5`, [like]),
     ]);
-    res.json({
+    return res.json({
       cases: casesR.rows.map((r: { status: string; outcome?: string | null }) => ({ ...r, stage: statusToStage(r.status, r.outcome) })),
       clients: clientsR.rows,
       staff: staffR.rows,
@@ -544,44 +585,56 @@ router.get('/search', async (req: Request, res: Response) => {
       templates: tmplR.rows,
     });
   } catch (err) {
-    console.error('[admin/search]', err);
-    res.status(500).json({ error: 'Search failed' });
+    console.error('[admin/search]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Search failed', requestId: req.id } });
   }
 });
 
 // ─── Saved views (sidebar presets) ────────────────────────────────────────
-router.get('/saved-views', async (req: Request, res: Response) => {
+router.get('/saved-views', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT * FROM saved_views WHERE owner_discord_id = $1 ORDER BY pinned DESC, sort_order ASC, created_at DESC`,
       [req.user!.discord_id]
     );
-    res.json({ views: r.rows });
+    return res.json({ views: r.rows });
   } catch (err) {
-    console.error('[admin/saved-views GET]', err);
-    res.status(500).json({ error: 'Failed to load views' });
+    console.error('[admin/saved-views GET]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to load views', requestId: req.id } });
   }
 });
 
-router.post('/saved-views', async (req: Request, res: Response) => {
+router.post('/saved-views', validate({ body: SavedViewCreateBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const { name, scope, query, pinned } = req.body || {};
-    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
+    const { name, scope, query, pinned } = req.body;
     const r = await pool.query(
       `INSERT INTO saved_views (owner_discord_id, name, scope, query, pinned)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [req.user!.discord_id, name.slice(0, 120), scope || 'cases', query || {}, !!pinned]
     );
-    res.status(201).json(r.rows[0]);
+    logAudit({
+      actorDiscordId: req.user!.discord_id,
+      action: 'saved_view_created',
+      targetType: 'saved_view',
+      targetId: r.rows[0].id,
+      details: { name, scope: scope || 'cases', pinned: !!pinned },
+    }).catch(console.error);
+    return res.status(201).json(r.rows[0]);
   } catch (err) {
-    console.error('[admin/saved-views POST]', err);
-    res.status(500).json({ error: 'Failed to save view' });
+    console.error('[admin/saved-views POST]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to save view', requestId: req.id } });
   }
 });
 
-router.patch('/saved-views/:id', async (req: Request, res: Response) => {
+router.patch('/saved-views/:id', validate({ params: NumIdParam, body: SavedViewPatchBody, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
-    const { name, query, pinned, sort_order } = req.body || {};
+    const { name, query, pinned, sort_order } = req.body;
+    const beforeR = await pool.query(
+      `SELECT name, pinned, sort_order, query FROM saved_views WHERE id = $1 AND owner_discord_id = $2`,
+      [req.params.id, req.user!.discord_id]
+    );
+    if (beforeR.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Not found', requestId: req.id } });
+    const before = beforeR.rows[0];
     const r = await pool.query(
       `UPDATE saved_views
           SET name = COALESCE($1, name),
@@ -592,24 +645,48 @@ router.patch('/saved-views/:id', async (req: Request, res: Response) => {
         WHERE id = $5 AND owner_discord_id = $6 RETURNING *`,
       [name ?? null, query ?? null, pinned ?? null, sort_order ?? null, req.params.id, req.user!.discord_id]
     );
-    if (r.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-    res.json(r.rows[0]);
+    const after = r.rows[0];
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
+    for (const k of ['name', 'pinned', 'sort_order'] as const) {
+      if ((req.body as Record<string, unknown>)[k] !== undefined && before[k] !== after[k]) {
+        diff[k] = { from: before[k], to: after[k] };
+      }
+    }
+    logAudit({
+      actorDiscordId: req.user!.discord_id,
+      action: 'saved_view_updated',
+      targetType: 'saved_view',
+      targetId: parseInt(req.params.id),
+      details: { diff },
+    }).catch(console.error);
+    return res.json(r.rows[0]);
   } catch (err) {
-    console.error('[admin/saved-views PATCH]', err);
-    res.status(500).json({ error: 'Failed to update view' });
+    console.error('[admin/saved-views PATCH]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to update view', requestId: req.id } });
   }
 });
 
-router.delete('/saved-views/:id', async (req: Request, res: Response) => {
+router.delete('/saved-views/:id', validate({ params: NumIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
+    const beforeR = await pool.query(
+      `SELECT name, scope, pinned FROM saved_views WHERE id = $1 AND owner_discord_id = $2`,
+      [req.params.id, req.user!.discord_id]
+    );
     await pool.query(
       `DELETE FROM saved_views WHERE id = $1 AND owner_discord_id = $2`,
       [req.params.id, req.user!.discord_id]
     );
-    res.json({ ok: true });
+    logAudit({
+      actorDiscordId: req.user!.discord_id,
+      action: 'saved_view_deleted',
+      targetType: 'saved_view',
+      targetId: parseInt(req.params.id),
+      details: beforeR.rows[0] ? { from: beforeR.rows[0], to: null } : {},
+    }).catch(console.error);
+    return res.json({ ok: true });
   } catch (err) {
-    console.error('[admin/saved-views DELETE]', err);
-    res.status(500).json({ error: 'Failed to delete view' });
+    console.error('[admin/saved-views DELETE]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to delete view', requestId: req.id } });
   }
 });
 

@@ -1,8 +1,19 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import passport from 'passport';
+import { z } from 'zod';
 import pool from '../db/client.js';
+import { validate } from '../middleware/index.js';
+import { emptyQuerySchema, emptyParamsSchema } from '../../shared/schemas.js';
 
 const router = Router();
+
+const DiscordInitQuery = z.object({ native: z.enum(['0', '1']).optional() }).strict();
+const OAuthCallbackQuery = z.object({
+  code: z.string().min(1).max(512).optional(),
+  state: z.string().max(512).optional(),
+  error: z.string().max(120).optional(),
+  error_description: z.string().max(500).optional(),
+}).strict();
 
 // Admin Discord IDs from env
 function getAdminIds(): string[] {
@@ -13,10 +24,16 @@ function getAdminIds(): string[] {
 }
 
 // ─── Discord OAuth initiation ─────────────────────────────────────────────
-router.get('/discord', (req: Request, res: Response, next: NextFunction) => {
+router.get('/discord', validate({ query: DiscordInitQuery, params: emptyParamsSchema }), (req: Request, res: Response, next: NextFunction) => {
   console.log('[Auth] /auth/discord — initiating Discord OAuth redirect');
   if (!process.env.DISCORD_CLIENT_ID) {
-    return res.status(503).send('Discord OAuth is not configured. Please set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI in Secrets.');
+    return res.status(503).json({
+      error: {
+        code: 'service_unavailable',
+        message: 'Discord OAuth is not configured. Please set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI in Secrets.',
+        requestId: req.id ?? 'unknown',
+      },
+    });
   }
   // Native APK login: caller appends ?native=1 (Login.tsx). Stash it on
   // the session so the callback knows to bounce back via the custom
@@ -26,11 +43,11 @@ router.get('/discord', (req: Request, res: Response, next: NextFunction) => {
   if (req.query.native === '1') {
     (req.session as any).nativeLogin = true;
   }
-  passport.authenticate('discord')(req, res, next);
+  return passport.authenticate('discord')(req, res, next);
 });
 
 // ─── Discord OAuth callback ───────────────────────────────────────────────
-router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
+router.get('/callback', validate({ query: OAuthCallbackQuery, params: emptyParamsSchema }), (req: Request, res: Response, next: NextFunction) => {
   const { code, error, error_description } = req.query;
 
   console.log('[Auth] /auth/callback received', {
@@ -135,16 +152,20 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
           : webPath;
 
         // Audit log
-        import('../services/webhook.js')
-          .then(({ logAudit }) =>
-            logAudit({
-              actorDiscordId: discordId,
-              action: isStaff ? 'admin_login' : 'client_login',
-              targetType: 'user',
-              details: { role, username: (req.user as any)?.discord_username },
-            })
-          )
-          .catch(console.error);
+        const userPk = Number((req.user as { id?: number })?.id);
+        if (Number.isInteger(userPk) && userPk > 0) {
+          import('../services/webhook.js')
+            .then(({ logAudit }) =>
+              logAudit({
+                actorDiscordId: discordId,
+                action: isStaff ? 'admin_login' : 'client_login',
+                targetType: 'user',
+                targetId: userPk,
+                details: { role, username: (req.user as { discord_username?: string })?.discord_username },
+              })
+            )
+            .catch(console.error);
+        }
 
         console.log('[Auth] Login successful — role:', role, '— redirecting to', redirectTo);
         return res.redirect(redirectTo);
@@ -154,7 +175,10 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ─── Magic link token access ──────────────────────────────────────────────
-router.get('/access/:token', async (req: Request, res: Response, next: NextFunction) => {
+const AccessTokenParam = z.object({
+  token: z.string().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/),
+}).strict();
+router.get('/access/:token', validate({ params: AccessTokenParam, query: emptyQuerySchema }), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { token } = req.params;
     console.log('[Auth] Magic link access attempt:', token?.substring(0, 8) + '...');
@@ -179,35 +203,35 @@ router.get('/access/:token', async (req: Request, res: Response, next: NextFunct
       if (err) return next(err);
       req.session.save((saveErr) => {
         if (saveErr) return next(saveErr);
-        res.redirect('/dashboard');
+        return res.redirect('/dashboard');
       });
     });
   } catch (err) {
-    console.error('[Auth] Magic link error:', err);
+    console.error('[Auth] Magic link error:', { req_id: req.id, err });
     next(err);
   }
 });
 
 // ─── Logout ──────────────────────────────────────────────────────────────
-router.get('/logout', (req: Request, res: Response, next: NextFunction) => {
+router.get('/logout', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), (req: Request, res: Response, next: NextFunction) => {
   console.log('[Auth] Logout request from:', (req.user as any)?.discord_id || 'unauthenticated');
   req.logout((err) => {
     if (err) return next(err);
     req.session.destroy((destroyErr) => {
       if (destroyErr) console.error('[Auth] Session destroy error:', destroyErr);
       res.clearCookie('connect.sid');
-      res.redirect('/');
+      return res.redirect('/');
     });
   });
 });
 
 // ─── Current user ────────────────────────────────────────────────────────
-router.get('/me', (req: Request, res: Response) => {
+router.get('/me', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), (req: Request, res: Response) => {
   if (!req.isAuthenticated() || !req.user) {
-    return res.status(401).json({ error: 'Not authenticated' });
+    return res.status(401).json({ error: { code: 'unauthorized', message: 'Not authenticated', requestId: req.id } });
   }
   const user = req.user as any;
-  res.json({
+  return res.json({
     id: user.id,
     discord_id: user.discord_id,
     discord_username: user.discord_username,
@@ -223,8 +247,8 @@ router.get('/me', (req: Request, res: Response) => {
 });
 
 // ─── Auth status (debug) ─────────────────────────────────────────────────
-router.get('/status', (req: Request, res: Response) => {
-  res.json({
+router.get('/status', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), (req: Request, res: Response) => {
+  return res.json({
     authenticated: req.isAuthenticated(),
     discord_oauth_configured: !!(
       process.env.DISCORD_CLIENT_ID &&

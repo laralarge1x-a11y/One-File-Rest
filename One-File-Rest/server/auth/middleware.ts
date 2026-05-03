@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { Errors } from '../middleware/errors.js';
 
 declare global {
   namespace Express {
@@ -19,61 +20,41 @@ declare global {
   }
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  if (!req.isAuthenticated()) {
-    res.status(401).json({ error: 'Unauthorized - please log in' });
-    return;
-  }
+export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.isAuthenticated()) return next(Errors.unauthorized('Please log in'));
   next();
 }
 
-export function requireStaff(req: Request, res: Response, next: NextFunction): void {
-  if (!req.isAuthenticated()) {
-    res.status(401).json({ error: 'Unauthorized - please log in' });
-    return;
-  }
+export function requireStaff(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.isAuthenticated()) return next(Errors.unauthorized('Please log in'));
   const staffRoles: string[] = ['support', 'case_manager', 'owner', 'admin'];
   if (!staffRoles.includes(req.user!.role)) {
-    res.status(403).json({ error: 'Forbidden - staff access required' });
-    return;
+    return next(Errors.forbidden('Staff access required'));
   }
   next();
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
-  if (!req.isAuthenticated()) {
-    res.status(401).json({ error: 'Unauthorized - please log in' });
-    return;
-  }
-  const adminRoles: string[] = ['owner', 'admin'];
-  if (!adminRoles.includes(req.user!.role)) {
-    res.status(403).json({ error: 'Forbidden - admin access required' });
-    return;
+export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.isAuthenticated()) return next(Errors.unauthorized('Please log in'));
+  if (!['owner', 'admin'].includes(req.user!.role)) {
+    return next(Errors.forbidden('Admin access required'));
   }
   next();
 }
 
-export function requireCaseManager(req: Request, res: Response, next: NextFunction): void {
-  if (!req.isAuthenticated()) {
-    res.status(401).json({ error: 'Unauthorized - please log in' });
-    return;
-  }
+export function requireCaseManager(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.isAuthenticated()) return next(Errors.unauthorized('Please log in'));
   const managerRoles: string[] = ['case_manager', 'owner', 'admin'];
   if (!managerRoles.includes(req.user!.role)) {
-    res.status(403).json({ error: 'Forbidden - case manager access required' });
-    return;
+    return next(Errors.forbidden('Case manager access required'));
   }
   next();
 }
 
-export function requireOwner(req: Request, res: Response, next: NextFunction): void {
-  if (!req.isAuthenticated()) {
-    res.status(401).json({ error: 'Unauthorized - please log in' });
-    return;
-  }
+export function requireOwner(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.isAuthenticated()) return next(Errors.unauthorized('Please log in'));
   if (!['owner', 'admin'].includes(req.user!.role)) {
-    res.status(403).json({ error: 'Forbidden - owner access required' });
-    return;
+    return next(Errors.forbidden('Owner access required'));
   }
   next();
 }
@@ -86,11 +67,8 @@ export function requireOwner(req: Request, res: Response, next: NextFunction): v
 // are rejected.
 import pool from '../db/client.js';
 const _adminIds = () => (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
-export async function requireActiveStaff(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (!req.isAuthenticated()) {
-    res.status(401).json({ error: 'Unauthorized - please log in' });
-    return;
-  }
+export async function requireActiveStaff(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  if (!req.isAuthenticated()) return next(Errors.unauthorized('Please log in'));
   const id = req.user!.discord_id;
   if (_adminIds().includes(id)) { next(); return; }
   try {
@@ -98,23 +76,19 @@ export async function requireActiveStaff(req: Request, res: Response, next: Next
       `SELECT 1 FROM staff WHERE discord_id = $1 AND active = true LIMIT 1`,
       [id]
     );
-    if (r.rowCount === 0) {
-      res.status(403).json({ error: 'Forbidden - active staff required' });
-      return;
-    }
+    if (r.rowCount === 0) return next(Errors.forbidden('Active staff required'));
     next();
   } catch (err) {
-    res.status(500).json({ error: 'staff check failed' });
+    next(err);
   }
 }
 
 // Verify bot bridge token
-export function requireBotToken(req: Request, res: Response, next: NextFunction): void {
+export function requireBotToken(req: Request, _res: Response, next: NextFunction): void {
   const token = req.headers['authorization'];
   const expected = `Bearer ${process.env.BOT_BRIDGE_TOKEN}`;
   if (!process.env.BOT_BRIDGE_TOKEN || token !== expected) {
-    res.status(401).json({ error: 'Unauthorized - invalid bot token' });
-    return;
+    return next(Errors.unauthorized('Invalid bot token'));
   }
   next();
 }

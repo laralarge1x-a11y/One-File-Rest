@@ -1,11 +1,16 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { isOnline } from '../services/presence.js';
+import { validate } from '../middleware/index.js';
+import { discordIdSchema, emptyQuerySchema, emptyBodySchema, emptyParamsSchema } from '../../shared/schemas.js';
 
 const router = Router();
 
+const DiscordIdParam = z.object({ discordId: discordIdSchema }).strict();
+
 // List visible specialists (with presence + win rate)
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT s.discord_id, s.name, s.role, s.bio, s.languages, s.specialties, s.timezone,
@@ -31,31 +36,31 @@ router.get('/', async (req: Request, res: Response) => {
       win_rate: s.resolved_cases > 0 ? Math.round((s.won_cases / s.resolved_cases) * 100) : null,
       favorited: favSet.has(s.discord_id),
     }));
-    res.json(result);
+    return res.json(result);
   } catch (err) {
-    console.error('[staff-public GET]', err);
-    res.status(500).json({ error: 'Failed' });
+    console.error('[staff-public GET]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.post('/:discordId/favorite', async (req: Request, res: Response) => {
+router.post('/:discordId/favorite', validate({ params: DiscordIdParam, query: emptyQuerySchema, body: emptyBodySchema }), async (req: Request, res: Response) => {
   try {
     await pool.query(
       `INSERT INTO specialist_favorites (user_discord_id, staff_discord_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
       [req.user!.discord_id, req.params.discordId]
     );
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
-router.delete('/:discordId/favorite', async (req: Request, res: Response) => {
+router.delete('/:discordId/favorite', validate({ params: DiscordIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     await pool.query(
       `DELETE FROM specialist_favorites WHERE user_discord_id = $1 AND staff_discord_id = $2`,
       [req.user!.discord_id, req.params.discordId]
     );
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
 export default router;

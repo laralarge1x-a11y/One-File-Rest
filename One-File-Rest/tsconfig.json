@@ -32,6 +32,6 @@
       "@shared/*": ["./shared/*"]
     }
   },
-  "include": ["server", "bot-bridge", "client/src", "shared"],
-  "exclude": ["node_modules"]
+  "include": ["server", "bot-bridge", "shared"],
+  "exclude": ["node_modules", "client"]
 }

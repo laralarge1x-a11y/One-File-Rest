@@ -1,19 +1,26 @@
 // Device-token registration for the native admin APK.
-// The mobile app POSTs its FCM registration token here after login so the
-// server can push to it via services/fcm.ts.
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { fcmConfigured, sendFcmToUser } from '../services/fcm.js';
+import { validate } from '../middleware/index.js';
+import { emptyQuerySchema, emptyBodySchema, emptyParamsSchema } from '../../shared/schemas.js';
 
 const router = Router();
 
-router.post('/register', async (req: Request, res: Response) => {
+const RegisterBody = z.object({
+  token: z.string().min(1).max(2000),
+  platform: z.enum(['android', 'ios', 'web']).optional(),
+  deviceLabel: z.string().max(200).optional().nullable(),
+  appVersion: z.string().max(40).optional().nullable(),
+}).strict();
+
+const UnregisterBody = z.object({ token: z.string().min(1).max(2000).optional() }).strict();
+
+router.post('/register', validate({ body: RegisterBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const { token, platform, deviceLabel, appVersion } = req.body || {};
-    if (!token || typeof token !== 'string') {
-      return res.status(400).json({ error: 'token required' });
-    }
-    const plat = ['android', 'ios', 'web'].includes(platform) ? platform : 'android';
+    const { token, platform, deviceLabel, appVersion } = req.body;
+    const plat = platform || 'android';
     await pool.query(
       `INSERT INTO device_tokens (user_discord_id, token, platform, device_label, app_version, last_seen_at)
        VALUES ($1, $2, $3, $4, $5, NOW())
@@ -25,29 +32,29 @@ router.post('/register', async (req: Request, res: Response) => {
          last_seen_at = NOW()`,
       [req.user!.discord_id, token, plat, deviceLabel || null, appVersion || null]
     );
-    res.json({ success: true, fcmConfigured: fcmConfigured() });
+    return res.json({ success: true, fcmConfigured: fcmConfigured() });
   } catch (err) {
-    console.error('[devices/register]', err);
-    res.status(500).json({ error: 'Failed to register device' });
+    console.error('[devices/register]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to register device', requestId: req.id } });
   }
 });
 
-router.post('/unregister', async (req: Request, res: Response) => {
+router.post('/unregister', validate({ body: UnregisterBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const { token } = req.body || {};
+    const { token } = req.body;
     if (token) {
       await pool.query(
         'DELETE FROM device_tokens WHERE token = $1 AND user_discord_id = $2',
         [token, req.user!.discord_id]
       );
     }
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: 'Failed' });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT id, platform, device_label, app_version, last_seen_at, created_at
@@ -55,22 +62,22 @@ router.get('/', async (req: Request, res: Response) => {
        ORDER BY last_seen_at DESC`,
       [req.user!.discord_id]
     );
-    res.json({ devices: r.rows, fcmConfigured: fcmConfigured() });
+    return res.json({ devices: r.rows, fcmConfigured: fcmConfigured() });
   } catch (err) {
-    res.status(500).json({ error: 'Failed' });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.post('/test', async (req: Request, res: Response) => {
+router.post('/test', validate({ body: emptyBodySchema, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const r = await sendFcmToUser(req.user!.discord_id, {
       title: 'Elite Tok Admin',
       body: 'Push notifications are working on this device.',
       url: '/admin',
     });
-    res.json(r);
+    return res.json(r);
   } catch (err) {
-    res.status(500).json({ error: 'FCM test failed' });
+    return res.status(500).json({ error: { code: 'internal', message: 'FCM test failed', requestId: req.id } });
   }
 });
 

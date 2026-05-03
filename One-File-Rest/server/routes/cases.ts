@@ -1,21 +1,56 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { calculateComplianceScore } from '../services/compliance-score.js';
 import { fireWebhook, buildNewCaseEmbed, buildStatusChangedEmbed, logAudit } from '../services/webhook.js';
 import { createNotification, emitCaseStatusChanged } from '../services/notifications.js';
 import { advanceCaseTimeline } from '../services/timeline.js';
 import { statusToStage, STAGE_IDS, getStatusesForStage, type StageId } from '../../shared/stages.js';
+import { validate } from '../middleware/index.js';
+import {
+  idParamSchema,
+  caseStatusEnum,
+  casePriorityEnum,
+  caseOutcomeEnum,
+  isoDateString,
+  stageEnum,
+  emptyQuerySchema, emptyParamsSchema
+} from '../../shared/schemas.js';
 
 const router = Router();
 
-router.get('/', async (req: Request, res: Response) => {
+const ListQuery = z.object({
+  stage: stageEnum.optional(),
+  q: z.string().max(200).optional(),
+}).strict();
+
+const CreateCaseBody = z.object({
+  accountUsername: z.string().trim().min(1).max(200),
+  violationType: z.string().trim().min(1).max(120),
+  violationDescription: z.string().max(5000).optional().nullable(),
+  appealDeadline: isoDateString.optional().nullable(),
+  totalGMV: z.coerce.number().nonnegative().optional(),
+  faceVideosPosted: z.coerce.number().int().nonnegative().optional(),
+  commissionFrozen: z.boolean().optional(),
+  commissionFrozenAmount: z.coerce.number().nonnegative().optional(),
+  accountPurchaseDate: isoDateString.optional().nullable(),
+  wizard: z.record(z.string(), z.unknown()).optional(),
+  selectedPlan: z.string().max(60).optional().nullable(),
+}).strict();
+
+const PatchCaseBody = z.object({
+  status: caseStatusEnum.optional(),
+  priority: casePriorityEnum.optional(),
+  appealDeadline: isoDateString.nullable().optional(),
+  outcome: caseOutcomeEnum.nullable().optional(),
+  outcome_notes: z.string().max(5000).nullable().optional(),
+}).strict();
+
+router.get('/', validate({ query: ListQuery, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const discordId = req.user?.discord_id;
+    const discordId = req.user!.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user?.role || '');
 
-    // ?stage=intake|appeal_drafting|... — canonical 7-stage filter. Stage
-    // → legacy-status translation lives in shared/stages.ts (single source
-    // of truth for client, server, bot, kanban, and webhooks).
     const stageParam = String(req.query.stage || '').trim();
     const stageFilter = stageParam && (STAGE_IDS as readonly string[]).includes(stageParam)
       ? (stageParam as StageId) : null;
@@ -29,8 +64,6 @@ router.get('/', async (req: Request, res: Response) => {
       conditions.push(`c.status = ANY($${p++}::text[])`);
       values.push(stageStatuses);
     }
-    // Customer-side palette / search hits this with ?q= — search the
-    // caller's own cases by id, account_username, or violation_type.
     const q = String(req.query.q || '').trim();
     if (q) {
       conditions.push(`(c.id::text = $${p} OR c.account_username ILIKE $${p + 1} OR c.violation_type ILIKE $${p + 1})`);
@@ -47,20 +80,18 @@ router.get('/', async (req: Request, res: Response) => {
         ORDER BY c.created_at DESC`,
       values
     );
-    // Decorate each row with its canonical stage so client doesn't need to
-    // re-import the mapping for read-only displays.
     const rows = result.rows.map((r: { status: string; outcome?: string | null }) => ({ ...r, stage: statusToStage(r.status, r.outcome) }));
-    res.json(rows);
+    return res.json(rows);
   } catch (err) {
-    console.error('Error fetching cases:', err);
-    res.status(500).json({ error: 'Failed to fetch cases' });
+    console.error('Error fetching cases:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch cases', requestId: req.id } });
   }
 });
 
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', validate({ params: idParamSchema, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const discordId = req.user?.discord_id;
+    const discordId = req.user!.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user?.role || '');
 
     const whereClause = isStaff ? 'WHERE c.id = $1' : 'WHERE c.id = $1 AND c.user_discord_id = $2';
@@ -74,11 +105,11 @@ router.get('/:id', async (req: Request, res: Response) => {
       values
     );
 
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
+    if (result.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
     const caseData = result.rows[0];
 
     let complianceScore = null;
-    try { complianceScore = await calculateComplianceScore(parseInt(id)); } catch {}
+    try { complianceScore = await calculateComplianceScore(parseInt(String(id))); } catch {}
 
     const [messagesResult, evidenceResult, onboardingResult, timelineResult] = await Promise.all([
       pool.query(`SELECT * FROM messages WHERE case_id = $1 ORDER BY created_at ASC`, [id]),
@@ -91,7 +122,7 @@ router.get('/:id', async (req: Request, res: Response) => {
           WHERE t.case_id = $1 ORDER BY t.id ASC`, [id]),
     ]);
 
-    res.json({
+    return res.json({
       ...caseData,
       complianceScore,
       messages: messagesResult.rows,
@@ -100,26 +131,23 @@ router.get('/:id', async (req: Request, res: Response) => {
       timeline: timelineResult.rows,
     });
   } catch (err) {
-    console.error('Error fetching case:', err);
-    res.status(500).json({ error: 'Failed to fetch case' });
+    console.error('Error fetching case:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch case', requestId: req.id } });
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', validate({ body: CreateCaseBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const discordId = req.user?.discord_id;
+    const discordId = req.user!.discord_id;
     const {
       accountUsername, violationType, violationDescription,
       appealDeadline, totalGMV, faceVideosPosted, commissionFrozen, commissionFrozenAmount, accountPurchaseDate,
-      // wizard payload
-      wizard, selectedPlan,
+      wizard,
     } = req.body;
     const frozenAmount = Number(
       commissionFrozenAmount ?? wizard?.metrics?.commissionFrozenAmount ?? 0
     ) || 0;
     const isFrozen = frozenAmount > 0 || commissionFrozen === true || wizard?.metrics?.commissionFrozen === true;
-
-    if (!accountUsername || !violationType) return res.status(400).json({ error: 'Missing required fields' });
 
     const result = await pool.query(
       `INSERT INTO cases (
@@ -130,10 +158,6 @@ router.post('/', async (req: Request, res: Response) => {
     );
     const newCase = result.rows[0];
 
-    // Persist onboarding wizard payload + seed timeline.
-    // Both are awaited so the response only resolves after the related rows
-    // have actually been written; otherwise the client would redirect to a
-    // case detail page that may be missing intake/timeline data.
     const rawOnboarding = wizard || {};
     const violationAnswers = wizard?.violations || [];
     const metrics = wizard?.metrics || {};
@@ -156,8 +180,6 @@ router.post('/', async (req: Request, res: Response) => {
             JSON.stringify(rawOnboarding),
           ]
         ),
-        // Seed timeline — Submitted is the active stage at creation
-        // (case status starts as 'pending'), which matches the client callout.
         pool.query(
           `INSERT INTO case_timeline (case_id, stage_name, stage_status) VALUES
              ($1, 'Submitted', 'active'),
@@ -172,64 +194,55 @@ router.post('/', async (req: Request, res: Response) => {
     } catch (persistErr) {
       console.error('Case auxiliary persistence failed:', persistErr);
       return res.status(500).json({
-        error: 'Case created but intake/timeline failed to save. Please contact support.',
-        case_id: newCase.id,
+        error: {
+          code: 'internal',
+          message: 'Case created but intake/timeline failed to save. Please contact support.',
+          requestId: req.id,
+          fields: { case_id: [String(newCase.id)] },
+        },
       });
     }
-
-    // NOTE: We deliberately do NOT touch users.plan here. `users.plan` is the
-    // billing/entitlement signal and must only change through the admin-managed
-    // billing flow. The wizard's `selectedPlan` is captured as intake metadata
-    // (already persisted inside onboarding_data.raw_onboarding above) so staff
-    // can see what the client picked, but it does not grant entitlement.
-    void selectedPlan;
 
     let complianceScore = null;
     try { complianceScore = await calculateComplianceScore(newCase.id); } catch {}
 
-    // Get user's plan for the webhook embed
     const userRes = await pool.query('SELECT plan FROM users WHERE discord_id = $1', [discordId]);
     const plan = userRes.rows[0]?.plan;
 
-    // Audit log + webhook (non-blocking)
-    logAudit({ actorDiscordId: discordId, action: 'case_created', targetType: 'case', targetId: newCase.id, details: { violation_type: violationType } }).catch(console.error);
+    logAudit({
+      actorDiscordId: discordId,
+      action: 'case_created',
+      targetType: 'case',
+      targetId: newCase.id,
+      details: { violation_type: violationType, account: accountUsername },
+    }).catch(console.error);
     fireWebhook(discordId!, 'case_created', buildNewCaseEmbed({ ...newCase, plan }));
 
-    res.status(201).json({ ...newCase, complianceScore });
+    return res.status(201).json({ ...newCase, complianceScore });
   } catch (err) {
-    console.error('Error creating case:', err);
-    res.status(500).json({ error: 'Failed to create case' });
+    console.error('Error creating case:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to create case', requestId: req.id } });
   }
 });
 
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', validate({ params: idParamSchema, body: PatchCaseBody, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const discordId = req.user?.discord_id;
+    const discordId = req.user!.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user?.role || '');
     const { status, priority, appealDeadline, outcome, outcome_notes } = req.body;
 
     const caseResult = await pool.query('SELECT * FROM cases WHERE id = $1', [id]);
-    if (caseResult.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
+    if (caseResult.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
     const oldCase = caseResult.rows[0];
 
     if (!isStaff && oldCase.user_discord_id !== discordId) {
-      return res.status(403).json({ error: 'Unauthorized' });
+      return res.status(403).json({ error: { code: 'forbidden', message: 'Unauthorized', requestId: req.id } });
     }
-
-    // Workflow fields (status / priority / outcome / outcome_notes) drive
-    // timeline advancement, client notifications, and webhooks. Only staff
-    // may mutate them; if a non-staff client owner sends those fields we
-    // reject the request rather than silently dropping them.
     if (!isStaff && (
-      status !== undefined ||
-      priority !== undefined ||
-      outcome !== undefined ||
-      outcome_notes !== undefined
+      status !== undefined || priority !== undefined || outcome !== undefined || outcome_notes !== undefined
     )) {
-      return res.status(403).json({
-        error: 'Only staff may change case status, priority, or outcome.',
-      });
+      return res.status(403).json({ error: { code: 'forbidden', message: 'Only staff may change case status, priority, or outcome.', requestId: req.id } });
     }
 
     const updates: string[] = [];
@@ -241,7 +254,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
     if (isStaff && outcome !== undefined)       { updates.push(`outcome = $${p++}`); values.push(outcome); }
     if (isStaff && outcome_notes !== undefined) { updates.push(`outcome_notes = $${p++}`); values.push(outcome_notes); }
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'No updatable fields provided.' });
+      return res.status(400).json({ error: { code: 'bad_request', message: 'No updatable fields provided.', requestId: req.id } });
     }
     updates.push('updated_at = NOW()');
     values.push(id);
@@ -251,10 +264,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
       values
     );
 
-    // Webhooks (non-blocking)
     if (status && status !== oldCase.status) {
       fireWebhook(oldCase.user_discord_id, 'status_changed', buildStatusChangedEmbed({
-        caseId: parseInt(id), oldStatus: oldCase.status, newStatus: status,
+        caseId: parseInt(String(id)), oldStatus: oldCase.status, newStatus: status,
         updatedBy: req.user!.discord_username,
       }));
     }
@@ -272,11 +284,22 @@ router.patch('/:id', async (req: Request, res: Response) => {
         footer: { text: 'TikTok Recovery Portal' },
       });
     }
-    logAudit({ actorDiscordId: discordId, action: 'case_updated', targetType: 'case', targetId: parseInt(id), details: { status, outcome } }).catch(console.error);
 
-    // In-app notification + socket broadcast (status change)
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
+    for (const k of ['status', 'priority', 'outcome', 'outcome_notes', 'appeal_deadline'] as const) {
+      const next = (req.body as Record<string, unknown>)[k === 'appeal_deadline' ? 'appealDeadline' : k];
+      if (next !== undefined && next !== oldCase[k]) diff[k] = { from: oldCase[k], to: next };
+    }
+    logAudit({
+      actorDiscordId: discordId,
+      action: 'case_updated',
+      targetType: 'case',
+      targetId: parseInt(String(id)),
+      details: { diff },
+    }).catch(console.error);
+
     if (status && status !== oldCase.status) {
-      await advanceCaseTimeline(parseInt(id), status, discordId ?? null, { source: 'manual', oldStatus: oldCase.status });
+      await advanceCaseTimeline(parseInt(String(id)), status, discordId ?? null, { source: 'manual', oldStatus: oldCase.status });
     }
     if (status && status !== oldCase.status && isStaff) {
       createNotification({
@@ -284,10 +307,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
         type: 'status_change',
         title: 'Case Status Updated',
         message: `Case #${id} moved to "${status.replace(/_/g, ' ')}"`,
-        caseId: parseInt(id),
+        caseId: parseInt(String(id)),
         actionUrl: `/cases/${id}`,
       });
-      // Escalation also pushes to the assigned staffer (FCM on native).
       const ESCALATED = ['escalated', 'awaiting_tiktok', 'response_received'];
       if (ESCALATED.includes(status) && oldCase.staff_assigned_id) {
         createNotification({
@@ -295,46 +317,53 @@ router.patch('/:id', async (req: Request, res: Response) => {
           type: 'case_escalated',
           title: `Case #${id} → ${status.replace(/_/g, ' ')}`,
           message: 'Needs your attention.',
-          caseId: parseInt(id),
+          caseId: parseInt(String(id)),
           actionUrl: `/admin/cases/${id}`,
         });
       }
-      emitCaseStatusChanged(parseInt(id), { caseId: parseInt(id), oldStatus: oldCase.status, newStatus: status });
+      emitCaseStatusChanged(parseInt(String(id)), { caseId: parseInt(String(id)), oldStatus: oldCase.status, newStatus: status });
     }
 
-    res.json(result.rows[0]);
+    return res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error updating case:', err);
-    res.status(500).json({ error: 'Failed to update case' });
+    console.error('Error updating case:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to update case', requestId: req.id } });
   }
 });
 
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', validate({ params: idParamSchema, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const discordId = req.user?.discord_id;
+    const discordId = req.user!.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user?.role || '');
 
-    const caseResult = await pool.query('SELECT user_discord_id FROM cases WHERE id = $1', [id]);
-    if (caseResult.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
+    const caseResult = await pool.query('SELECT user_discord_id, status FROM cases WHERE id = $1', [id]);
+    if (caseResult.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
     if (!isStaff && caseResult.rows[0].user_discord_id !== discordId) {
-      return res.status(403).json({ error: 'Unauthorized' });
+      return res.status(403).json({ error: { code: 'forbidden', message: 'Unauthorized', requestId: req.id } });
     }
 
     await pool.query(`UPDATE cases SET status = 'closed', updated_at = NOW() WHERE id = $1`, [id]);
-    res.json({ success: true });
+    logAudit({
+      actorDiscordId: discordId,
+      action: 'case_closed',
+      targetType: 'case',
+      targetId: parseInt(String(id)),
+      details: { from: caseResult.rows[0].status, to: 'closed' },
+    }).catch(console.error);
+    return res.json({ success: true });
   } catch (err) {
-    console.error('Error closing case:', err);
-    res.status(500).json({ error: 'Failed to close case' });
+    console.error('Error closing case:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to close case', requestId: req.id } });
   }
 });
 
-router.get('/:id/compliance-score', async (req: Request, res: Response) => {
+router.get('/:id/compliance-score', validate({ params: idParamSchema, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
-    const score = await calculateComplianceScore(parseInt(req.params.id));
-    res.json(score);
+    const score = await calculateComplianceScore(parseInt(String(req.params.id)));
+    return res.json(score);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch compliance score' });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch compliance score', requestId: req.id } });
   }
 });
 

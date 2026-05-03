@@ -1,12 +1,22 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { getIO } from '../socket-store.js';
-import { fireWebhook, buildClientMessageEmbed, buildStaffReplyEmbed, logAudit } from '../services/webhook.js';
+import { fireWebhook, buildStaffReplyEmbed, logAudit } from '../services/webhook.js';
 import { createNotification } from '../services/notifications.js';
+import { validate } from '../middleware/index.js';
+import { emptyQuerySchema, emptyBodySchema , emptyParamsSchema} from '../../shared/schemas.js';
 
 const router = Router();
 
-router.get('/:caseId', async (req: Request, res: Response) => {
+const CaseIdParam = z.object({ caseId: z.coerce.number().int().positive() }).strict();
+const SendMessageBody = z.object({
+  case_id: z.coerce.number().int().positive(),
+  content: z.string().min(1).max(10_000),
+  template_id: z.coerce.number().int().positive().optional(),
+}).strict();
+
+router.get('/:caseId', validate({ params: CaseIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const { caseId } = req.params;
     const discordId = req.user!.discord_id;
@@ -14,8 +24,8 @@ router.get('/:caseId', async (req: Request, res: Response) => {
 
     if (!isStaff) {
       const caseCheck = await pool.query('SELECT user_discord_id FROM cases WHERE id = $1', [caseId]);
-      if (caseCheck.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
-      if (caseCheck.rows[0].user_discord_id !== discordId) return res.status(403).json({ error: 'Forbidden' });
+      if (caseCheck.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
+      if (caseCheck.rows[0].user_discord_id !== discordId) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
     }
 
     const result = await pool.query(
@@ -26,31 +36,29 @@ router.get('/:caseId', async (req: Request, res: Response) => {
        ORDER BY m.created_at ASC`,
       [caseId]
     );
-    res.json(result.rows);
+    return res.json(result.rows);
   } catch (err) {
-    console.error('Error fetching messages:', err);
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    console.error('Error fetching messages:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch messages', requestId: req.id } });
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', validate({ body: SendMessageBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const { case_id, content, template_id } = req.body;
     const discordId = req.user!.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user!.role);
     const senderType = isStaff ? 'staff' : 'client';
 
-    if (!case_id || !content) return res.status(400).json({ error: 'case_id and content required' });
-
     // Verify access
     const caseResult = await pool.query(
       'SELECT user_discord_id, account_username, staff_assigned_id FROM cases WHERE id = $1', [case_id]
     );
-    if (caseResult.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
+    if (caseResult.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
     const caseOwner = caseResult.rows[0];
 
     if (!isStaff && caseOwner.user_discord_id !== discordId) {
-      return res.status(403).json({ error: 'Forbidden' });
+      return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
     }
 
     const result = await pool.query(
@@ -108,10 +116,10 @@ router.post('/', async (req: Request, res: Response) => {
       try { getIO().to('admin').emit('message:new', message); } catch {}
     }
 
-    res.status(201).json(message);
+    return res.status(201).json(message);
   } catch (err) {
-    console.error('Error sending message:', err);
-    res.status(500).json({ error: 'Failed to send message' });
+    console.error('Error sending message:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to send message', requestId: req.id } });
   }
 });
 
@@ -124,11 +132,11 @@ router.post('/', async (req: Request, res: Response) => {
 //     their discord_id); we mark non-client (staff/AI/system) messages as read
 //     for them so their bell/unread badge clears.
 //   - Anyone else gets a 403.
-router.patch('/read/:caseId', async (req: Request, res: Response) => {
+router.patch('/read/:caseId', validate({ params: CaseIdParam, query: emptyQuerySchema, body: emptyBodySchema }), async (req: Request, res: Response) => {
   try {
     const { caseId } = req.params;
     if (!req.isAuthenticated || !req.isAuthenticated() || !req.user) {
-      res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: { code: 'unauthorized', message: 'Unauthorized', requestId: req.id } });
       return;
     }
     const me = req.user;
@@ -140,14 +148,14 @@ router.patch('/read/:caseId', async (req: Request, res: Response) => {
       [caseId]
     );
     if (ownership.rowCount === 0) {
-      res.status(404).json({ error: 'Case not found' });
+      return res.status(404).json({ error: { code: 'not_found', message: 'Case not found', requestId: req.id } });
       return;
     }
     const ownerDiscordId: string = ownership.rows[0].user_discord_id;
     const isOwner = ownerDiscordId === me.discord_id;
 
     if (!isStaff && !isOwner) {
-      res.status(403).json({ error: 'Forbidden — you do not have access to this case' });
+      return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden — you do not have access to this case', requestId: req.id } });
       return;
     }
 
@@ -173,10 +181,10 @@ router.patch('/read/:caseId', async (req: Request, res: Response) => {
         [caseId, me.discord_id]
       );
     }
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
-    console.error('Error marking messages as read:', err);
-    res.status(500).json({ error: 'Failed to mark messages as read' });
+    console.error('Error marking messages as read:', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to mark messages as read', requestId: req.id } });
   }
 });
 

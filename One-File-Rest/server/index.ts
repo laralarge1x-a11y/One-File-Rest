@@ -11,7 +11,25 @@ import fs from 'fs';
 import pool from './db/client.js';
 import { setIO } from './socket-store.js';
 import { discordStrategy } from './auth/discord.js';
-import { requireAuth, requireStaff, requireAdmin, requireActiveStaff } from './auth/middleware.js';
+import { requireAuth, requireStaff, requireActiveStaff } from './auth/middleware.js';
+import {
+  requestId,
+  errorHandler,
+  notFoundHandler,
+  enforceErrorEnvelope,
+  generalLimiter,
+  authLimiter,
+  aiLimiter,
+  adminLimiter,
+  botBridgeLimiter,
+} from './middleware/index.js';
+import {
+  buildAllowedOrigins,
+  securityHeaders,
+  corsMiddleware,
+  permissionsPolicy,
+  accessLog,
+} from './middleware/security.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -89,14 +107,38 @@ if (missingRequired.length > 0) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
+// Apply the same CORS allow-list to Socket.IO as to HTTP. Wildcard with
+// credentials would let any origin open an authenticated realtime channel.
 const io = new SocketServer(httpServer, {
-  cors: { origin: '*', credentials: true },
+  cors: {
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      const allowed = buildAllowedOrigins();
+      if (allowed.includes(origin)) return cb(null, true);
+      cb(new Error(`Socket.IO CORS blocked: ${origin}`));
+    },
+    credentials: true,
+  },
 });
 setIO(io);
 
 app.set('trust proxy', 1);
+
+app.use(requestId);
+app.use(accessLog);
+app.use(securityHeaders);
+app.use(permissionsPolicy);
+app.use(corsMiddleware);
+app.use(enforceErrorEnvelope);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Shallow liveness probe — mounted BEFORE session/passport so it does no
+// I/O and cannot be blocked by a degraded session store. Pure CPU only.
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
 // ─── Session ──────────────────────────────────────────────────────────────
 const PgSession = pgSession(session);
@@ -161,6 +203,12 @@ passport.deserializeUser(async (discord_id: string, done) => {
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Coarse, generous limit applied AFTER session/passport so the keyer can
+// see req.user and bucket per-Discord-user (not just per-IP). Tighter
+// limits are layered on per route group below; each route group is
+// limited exactly once.
+app.use(generalLimiter);
+
 // ─── Routes ───────────────────────────────────────────────────────────────
 const ROUTE_MOUNTS: Array<{ prefix: string; router: any }> = [];
 const mount = (prefix: string, ...handlers: any[]) => {
@@ -169,8 +217,16 @@ const mount = (prefix: string, ...handlers: any[]) => {
   app.use(prefix, ...handlers);
 };
 
-mount('/auth', authRoutes);
-mount('/bot', botBridgeRoutes);
+// Rate-limit prefixes must be registered before route mounts.
+app.use('/api/admin', adminLimiter);
+app.use('/api/templates', adminLimiter);
+app.use('/api/broadcast', adminLimiter);
+app.use('/api/policies', adminLimiter);
+app.use('/api/devices', adminLimiter);
+app.use('/api/ai', aiLimiter);
+
+mount('/auth', authLimiter, authRoutes);
+mount('/bot', botBridgeLimiter, botBridgeRoutes);
 mount('/api/cases', requireAuth, casesRoutes);
 mount('/api/messages', requireAuth, messagesRoutes);
 mount('/api/evidence', requireAuth, evidenceRoutes);
@@ -194,14 +250,92 @@ mount('/api/exports', requireAuth, exportsRoutes);
 mount('/api/staff-public', requireAuth, staffPublicRoutes);
 mount('/api/devices', requireStaff, devicesRoutes);
 
-// Health check
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
+// Deep readiness probe — exercises DB, bot bridge auth path, Groq key,
+// and Discord gateway. Used by deployment readiness checks.
+app.get('/health/deep', async (_req, res) => {
+  const checks: Record<string, { ok: boolean; detail?: string }> = {};
+
+  async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`timeout ${ms}ms`)), ms)),
+    ]);
+  }
+
+  // DB
+  try {
+    const start = Date.now();
+    await withTimeout(pool.query('SELECT 1'), 2000);
+    checks.database = { ok: true, detail: `${Date.now() - start}ms` };
+  } catch (err: any) {
+    checks.database = { ok: false, detail: err?.message || 'query failed' };
+  }
+
+  if (!process.env.BOT_BRIDGE_TOKEN) {
+    checks.bot_bridge = { ok: false, detail: 'BOT_BRIDGE_TOKEN not set' };
+  } else if (!process.env.BOT_BRIDGE_URL) {
+    checks.bot_bridge = { ok: false, detail: 'BOT_BRIDGE_URL not set' };
+  } else {
+    try {
+      const start = Date.now();
+      const base = process.env.BOT_BRIDGE_URL;
+      {
+        const r = await withTimeout(
+          fetch(`${base.replace(/\/$/, '')}/bot/health`, {
+            headers: { Authorization: `Bearer ${process.env.BOT_BRIDGE_TOKEN}` },
+          }),
+          2000,
+        );
+        checks.bot_bridge = r.ok
+          ? { ok: true, detail: `${Date.now() - start}ms` }
+          : { ok: false, detail: `http ${r.status}` };
+      }
+    } catch (err: any) {
+      checks.bot_bridge = { ok: false, detail: err?.message || 'bridge ping failed' };
+    }
+  }
+
+  // Groq reachability — hit /v1/models with the configured key.
+  if (!process.env.GROQ_API_KEY) {
+    checks.groq = { ok: false, detail: 'GROQ_API_KEY not set' };
+  } else {
+    try {
+      const start = Date.now();
+      const r = await withTimeout(
+        fetch('https://api.groq.com/openai/v1/models', {
+          headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+        }),
+        2500,
+      );
+      checks.groq = r.ok
+        ? { ok: true, detail: `${Date.now() - start}ms` }
+        : { ok: false, detail: `http ${r.status}` };
+    } catch (err: any) {
+      checks.groq = { ok: false, detail: err?.message || 'fetch failed' };
+    }
+  }
+
+  // Discord reachability — public gateway endpoint, no auth required.
+  if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
+    checks.discord = { ok: false, detail: 'OAuth not configured' };
+  } else {
+    try {
+      const start = Date.now();
+      const r = await withTimeout(fetch('https://discord.com/api/v10/gateway'), 2500);
+      checks.discord = r.ok
+        ? { ok: true, detail: `${Date.now() - start}ms` }
+        : { ok: false, detail: `http ${r.status}` };
+    } catch (err: any) {
+      checks.discord = { ok: false, detail: err?.message || 'fetch failed' };
+    }
+  }
+
+  const allOk = Object.values(checks).every((c) => c.ok);
+  res.status(allOk ? 200 : 503).json({
+    status: allOk ? 'ok' : 'degraded',
     env: process.env.NODE_ENV,
-    discord_oauth: !!(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET),
-    bot_configured: !!process.env.DISCORD_BOT_TOKEN,
     timestamp: new Date().toISOString(),
+    checks,
   });
 });
 
@@ -290,6 +424,11 @@ io.on('connection', async (socket) => {
   });
 });
 
+// 404 for unmatched /api|/auth|/bot routes MUST run BEFORE the SPA
+// fallback, otherwise unmatched API/auth/bot paths get the SPA's
+// index.html in production instead of the canonical envelope.
+app.use(['/api', '/auth', '/bot'], notFoundHandler);
+
 // ─── Static frontend (production only) ────────────────────────────────────
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
@@ -298,13 +437,9 @@ if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
 }
 
 // ─── Global error handler ─────────────────────────────────────────────────
-app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('[UNHANDLED ERROR]', { method: req.method, url: req.url, message: err?.message });
-  res.status(err?.status || 500).json({
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err?.message,
-  });
-});
+// Single source of truth for the error envelope:
+//   { error: { code, message, requestId, fields? } }
+app.use(errorHandler);
 
 // ─── Startup ──────────────────────────────────────────────────────────────
 async function start() {

@@ -1,5 +1,5 @@
 import pool from '../db/client.js';
-import { formatStatusLabel, emojiForStatus, getStageMeta, statusToStage } from '../../shared/stages.js';
+import { formatStatusLabel, emojiForStatus } from '../../shared/stages.js';
 
 const PORTAL_URL = process.env.PORTAL_URL || 'https://one-file-rest.replit.app';
 
@@ -326,25 +326,41 @@ export function buildRevokeEmbed(revokedBy: string): WebhookEmbed {
 }
 
 // ─── Audit log helper ──────────────────────────────────────────────────────
-export async function logAudit(data: {
-  actorDiscordId?: string;
+export interface AuditEntry {
+  actorDiscordId: string;
   actorUserId?: number;
   action: string;
-  targetType?: string;
-  targetId?: number;
-  details?: Record<string, any>;
-}): Promise<void> {
+  targetType: string;
+  targetId: number;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Persist an admin/mutation audit event. Every privileged write MUST
+ * supply actor + action + targetType + numeric targetId; the function
+ * rejects (without throwing) any entry that violates that contract so
+ * we never silently insert a NULL target and lose attribution.
+ */
+export async function logAudit(data: AuditEntry): Promise<void> {
+  if (!data.actorDiscordId || !data.action || !data.targetType
+      || !Number.isInteger(data.targetId) || data.targetId <= 0) {
+    console.error('[audit] Refusing to log entry with missing/invalid fields:', {
+      actor: data.actorDiscordId, action: data.action,
+      targetType: data.targetType, targetId: data.targetId,
+    });
+    return;
+  }
   try {
     await pool.query(
       `INSERT INTO audit_log (actor_discord_id, actor_user_id, action, target_type, target_id, details, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [
-        data.actorDiscordId || null,
-        data.actorUserId || null,
+        data.actorDiscordId,
+        data.actorUserId ?? null,
         data.action,
-        data.targetType || null,
-        data.targetId || null,
-        JSON.stringify(data.details || {}),
+        data.targetType,
+        data.targetId,
+        JSON.stringify(data.details ?? {}),
       ]
     );
   } catch (err) {

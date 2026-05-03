@@ -1,8 +1,25 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import pool from '../db/client.js';
+import { validate } from '../middleware/index.js';
+import { idParamSchema, emptyQuerySchema , emptyParamsSchema} from '../../shared/schemas.js';
 
 const router = Router();
 const STAFF = ['support', 'case_manager', 'owner', 'admin'];
+
+const CaseIdParam = z.object({ caseId: z.coerce.number().int().positive() }).strict();
+const ChecklistPatchBody = z.object({
+  completed: z.boolean().optional(),
+  evidence_id: z.coerce.number().int().positive().nullable().optional(),
+  label: z.string().max(300).optional(),
+  required: z.boolean().optional(),
+}).strict();
+const ChecklistCreateBody = z.object({
+  case_id: z.coerce.number().int().positive(),
+  stage: z.string().min(1).max(80),
+  label: z.string().min(1).max(300),
+  required: z.boolean().optional(),
+}).strict();
 
 // Default checklist items per stage
 const STAGE_DEFAULTS: Record<string, Array<{ label: string; required: boolean }>> = {
@@ -53,27 +70,27 @@ async function canAccess(req: Request, caseId: number): Promise<boolean> {
   return r.rows[0]?.user_discord_id === req.user?.discord_id;
 }
 
-router.get('/:caseId', async (req: Request, res: Response) => {
+router.get('/:caseId', validate({ params: CaseIdParam, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const caseId = parseInt(req.params.caseId);
-    if (!await canAccess(req, caseId)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await canAccess(req, caseId)) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
     await ensureDefaults(caseId);
     const r = await pool.query(
       `SELECT * FROM case_checklist_items WHERE case_id = $1 ORDER BY stage, sort_order, id`,
       [caseId]
     );
-    res.json(r.rows);
+    return res.json(r.rows);
   } catch (err) {
-    console.error('[checklist GET]', err);
-    res.status(500).json({ error: 'Failed' });
+    console.error('[checklist GET]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', validate({ params: idParamSchema, body: ChecklistPatchBody, query: emptyQuerySchema }), async (req: Request, res: Response) => {
   try {
     const item = await pool.query('SELECT * FROM case_checklist_items WHERE id = $1', [req.params.id]);
-    if (item.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-    if (!await canAccess(req, item.rows[0].case_id)) return res.status(403).json({ error: 'Forbidden' });
+    if (item.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'Not found', requestId: req.id } });
+    if (!await canAccess(req, item.rows[0].case_id)) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
 
     const { completed, evidence_id, label, required } = req.body || {};
     const r = await pool.query(
@@ -88,32 +105,31 @@ router.patch('/:id', async (req: Request, res: Response) => {
       [typeof completed === 'boolean' ? completed : null, req.user!.discord_id, evidence_id ?? null,
        label ?? null, typeof required === 'boolean' ? required : null, req.params.id]
     );
-    res.json(r.rows[0]);
+    return res.json(r.rows[0]);
   } catch (err) {
-    console.error('[checklist PATCH]', err);
-    res.status(500).json({ error: 'Failed' });
+    console.error('[checklist PATCH]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
-  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: 'Forbidden' });
+router.post('/', validate({ body: ChecklistCreateBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
+  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
   try {
-    const { case_id, stage, label, required } = req.body || {};
-    if (!case_id || !stage || !label) return res.status(400).json({ error: 'case_id, stage, label required' });
+    const { case_id, stage, label, required } = req.body;
     const r = await pool.query(
       `INSERT INTO case_checklist_items (case_id, stage, label, required) VALUES ($1, $2, $3, $4) RETURNING *`,
       [case_id, stage, label, required !== false]
     );
-    res.status(201).json(r.rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.status(201).json(r.rows[0]);
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
-router.delete('/:id', async (req: Request, res: Response) => {
-  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: 'Forbidden' });
+router.delete('/:id', validate({ params: idParamSchema, query: emptyQuerySchema }), async (req: Request, res: Response) => {
+  if (!STAFF.includes(req.user?.role || '')) return res.status(403).json({ error: { code: 'forbidden', message: 'Forbidden', requestId: req.id } });
   try {
     await pool.query('DELETE FROM case_checklist_items WHERE id = $1', [req.params.id]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } }); }
 });
 
 // Helper export: check if all required items in a stage are complete

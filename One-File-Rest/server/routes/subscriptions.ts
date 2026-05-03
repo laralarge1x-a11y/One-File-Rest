@@ -1,9 +1,19 @@
 import { Router, Request, Response } from 'express';
+import { emptyQuerySchema, emptyBodySchema, emptyParamsSchema } from '../../shared/schemas.js';
+import { z } from 'zod';
 import pool from '../db/client.js';
 import { PLAN_META } from '../services/webhook.js';
 import { logAudit } from '../services/webhook.js';
+import { validate } from '../middleware/index.js';
 
 const router = Router();
+
+const PauseBody = z.object({ reason: z.string().max(500).optional().nullable() }).strict();
+const CancelBody = z.object({
+  reason: z.string().max(500).optional().nullable(),
+  immediate: z.boolean().optional(),
+}).strict();
+const ChangeBody = z.object({ plan: z.string().min(1).max(60) }).strict();
 
 const PLAN_LIMITS: Record<string, number> = {
   basic_guard: 1,
@@ -11,7 +21,7 @@ const PLAN_LIMITS: Record<string, number> = {
   proshield_creator: 5,
 };
 
-router.get('/me', async (req: Request, res: Response) => {
+router.get('/me', validate({ query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const discordId = req.user!.discord_id;
     const userR = await pool.query(
@@ -44,7 +54,7 @@ router.get('/me', async (req: Request, res: Response) => {
       [discordId]
     );
 
-    res.json({
+    return res.json({
       plan: u.plan,
       plan_start: u.plan_start,
       plan_expiry: u.plan_expiry,
@@ -55,28 +65,28 @@ router.get('/me', async (req: Request, res: Response) => {
       availablePlans: Object.entries(PLAN_META).map(([id, m]) => ({ id, ...m, limit: PLAN_LIMITS[id] })),
     });
   } catch (err) {
-    console.error('[subscriptions/me]', err);
-    res.status(500).json({ error: 'Failed to fetch subscription' });
+    console.error('[subscriptions/me]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to fetch subscription', requestId: req.id } });
   }
 });
 
 // Pause active subscription (does not change plan)
-router.post('/pause', async (req: Request, res: Response) => {
+router.post('/pause', validate({ body: PauseBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const { reason } = req.body || {};
+    const { reason } = req.body;
     const discordId = req.user!.discord_id;
     const r = await pool.query(
       `UPDATE subscriptions SET status = 'paused', paused_at = NOW(), pause_reason = $1, updated_at = NOW()
         WHERE user_discord_id = $2 AND status = 'active' RETURNING *`,
       [reason || null, discordId]
     );
-    if (r.rows.length === 0) return res.status(404).json({ error: 'No active subscription' });
+    if (r.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'No active subscription', requestId: req.id } });
     logAudit({ actorDiscordId: discordId, action: 'subscription_paused', targetType: 'subscription', targetId: r.rows[0].id, details: { reason } }).catch(console.error);
-    res.json(r.rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Failed to pause' }); }
+    return res.json(r.rows[0]);
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed to pause', requestId: req.id } }); }
 });
 
-router.post('/resume', async (req: Request, res: Response) => {
+router.post('/resume', validate({ body: emptyBodySchema, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
     const discordId = req.user!.discord_id;
     const r = await pool.query(
@@ -84,16 +94,24 @@ router.post('/resume', async (req: Request, res: Response) => {
         WHERE user_discord_id = $1 AND status = 'paused' RETURNING *`,
       [discordId]
     );
-    if (r.rows.length === 0) return res.status(404).json({ error: 'No paused subscription' });
+    if (r.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'No paused subscription', requestId: req.id } });
     logAudit({ actorDiscordId: discordId, action: 'subscription_resumed', targetType: 'subscription', targetId: r.rows[0].id }).catch(console.error);
-    res.json(r.rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Failed to resume' }); }
+    return res.json(r.rows[0]);
+  } catch (err) { return res.status(500).json({ error: { code: 'internal', message: 'Failed to resume', requestId: req.id } }); }
 });
 
-router.post('/cancel', async (req: Request, res: Response) => {
+router.post('/cancel', validate({ body: CancelBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const { reason, immediate } = req.body || {};
+    const { reason, immediate } = req.body;
     const discordId = req.user!.discord_id;
+    const beforeR = await pool.query(
+      `SELECT id, status, cancel_at_period_end, cancel_reason, end_date
+         FROM subscriptions WHERE user_discord_id = $1 AND status IN ('active','paused')
+         ORDER BY created_at DESC LIMIT 1`,
+      [discordId]
+    );
+    if (beforeR.rows.length === 0) return res.status(404).json({ error: { code: 'not_found', message: 'No active subscription', requestId: req.id } });
+    const before = beforeR.rows[0];
     const r = await pool.query(
       `UPDATE subscriptions SET
          status = CASE WHEN $1 THEN 'cancelled' ELSE status END,
@@ -101,30 +119,55 @@ router.post('/cancel', async (req: Request, res: Response) => {
          cancel_reason = $2,
          end_date = CASE WHEN $1 THEN NOW() ELSE end_date END,
          updated_at = NOW()
-        WHERE user_discord_id = $3 AND status IN ('active','paused') RETURNING *`,
-      [!!immediate, reason || null, discordId]
+        WHERE id = $3 RETURNING *`,
+      [!!immediate, reason || null, before.id]
     );
     if (immediate) {
       await pool.query(`UPDATE users SET plan = NULL WHERE discord_id = $1`, [discordId]);
     }
-    logAudit({ actorDiscordId: discordId, action: 'subscription_cancelled', targetType: 'subscription', details: { reason, immediate: !!immediate } }).catch(console.error);
-    res.json(r.rows[0] || { success: true });
-  } catch (err) { res.status(500).json({ error: 'Failed to cancel' }); }
+    const after = r.rows[0];
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
+    for (const k of ['status', 'cancel_at_period_end', 'cancel_reason', 'end_date'] as const) {
+      if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) {
+        diff[k] = { from: before[k], to: after[k] };
+      }
+    }
+    logAudit({
+      actorDiscordId: discordId,
+      action: 'subscription_cancelled',
+      targetType: 'subscription',
+      targetId: before.id,
+      details: { reason: reason || null, immediate: !!immediate, diff },
+    }).catch(console.error);
+    return res.json(after);
+  } catch (err) {
+    console.error('[subscriptions/cancel]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed to cancel', requestId: req.id } });
+  }
 });
 
 // Request a plan change. Marks audit log; admin must finalize via /api/admin/clients/:id PATCH.
-router.post('/change-request', async (req: Request, res: Response) => {
+router.post('/change-request', validate({ body: ChangeBody, query: emptyQuerySchema, params: emptyParamsSchema }), async (req: Request, res: Response) => {
   try {
-    const { plan } = req.body || {};
-    if (!plan || !PLAN_META[plan]) return res.status(400).json({ error: 'Invalid plan' });
+    const { plan } = req.body;
+    if (!PLAN_META[plan]) return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid plan', requestId: req.id } });
+    const discordId = req.user!.discord_id;
+    const subR = await pool.query(
+      `SELECT id FROM subscriptions WHERE user_discord_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [discordId]
+    );
     logAudit({
-      actorDiscordId: req.user!.discord_id,
+      actorDiscordId: discordId,
       action: 'subscription_change_requested',
       targetType: 'subscription',
-      details: { requested_plan: plan, current_plan: req.user!.plan },
+      targetId: subR.rows[0]?.id ?? null,
+      details: { from: { plan: req.user!.plan }, to: { plan }, status: 'pending_admin_review' },
     }).catch(console.error);
-    res.json({ success: true, message: 'Change request submitted. A staff member will follow up.' });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+    return res.json({ success: true, message: 'Change request submitted. A staff member will follow up.' });
+  } catch (err) {
+    console.error('[subscriptions/change]', { req_id: req.id, err });
+    return res.status(500).json({ error: { code: 'internal', message: 'Failed', requestId: req.id } });
+  }
 });
 
 export default router;
