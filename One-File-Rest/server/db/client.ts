@@ -20,7 +20,7 @@ export interface QueryOptions {
   values?: (string | number | boolean | null | object)[];
 }
 
-export async function query<T = any>(
+export async function query<T extends Record<string, any> = any>(
   text: string,
   values?: (string | number | boolean | null | object)[]
 ): Promise<QueryResult<T>> {

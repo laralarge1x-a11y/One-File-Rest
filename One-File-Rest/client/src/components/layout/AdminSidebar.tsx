@@ -218,8 +218,8 @@ export default function AdminSidebar() {
 
         {user && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {user.discord_avatar ? (
-              <img src={`https://cdn.discordapp.com/avatars/${user.discord_id}/${user.discord_avatar}.png?size=32`} alt="" style={{ width: 32, height: 32, borderRadius: '50%', border: '2px solid #333' }} />
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt="" style={{ width: 32, height: 32, borderRadius: '50%', border: '2px solid #333' }} />
             ) : (
               <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#5865F2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 13, fontWeight: 700 }}>
                 {user.discord_username?.[0]?.toUpperCase()}

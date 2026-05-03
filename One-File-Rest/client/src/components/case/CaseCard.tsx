@@ -1,6 +1,18 @@
-import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { formatDate, getDaysUntil, getStatusColor } from '../../lib/utils';
+import { formatDate, getDaysUntil } from '../../lib/utils';
+import { emojiForStatus, formatStatusLabel } from '@shared/stages';
+
+const STATUS_PILL: Record<string, string> = {
+  pending: 'bg-yellow-100 text-yellow-800',
+  in_review: 'bg-blue-100 text-blue-800',
+  drafting: 'bg-blue-100 text-blue-800',
+  submitted: 'bg-indigo-100 text-indigo-800',
+  awaiting_response: 'bg-purple-100 text-purple-800',
+  won: 'bg-green-100 text-green-800',
+  denied: 'bg-red-100 text-red-800',
+  closed: 'bg-gray-200 text-gray-700',
+};
+const getStatusColor = (status: string): string => STATUS_PILL[status] ?? 'bg-gray-100 text-gray-800';
 
 interface CaseCardProps {
   id: number;
@@ -35,7 +47,7 @@ export default function CaseCard({
           <p className="text-sm text-gray-600">{violationType}</p>
         </div>
         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(status)}`}>
-          {status}
+          {emojiForStatus(status)} {formatStatusLabel(status)}
         </span>
       </div>
 

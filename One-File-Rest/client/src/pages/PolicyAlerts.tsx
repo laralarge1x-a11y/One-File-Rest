@@ -19,15 +19,13 @@ export default function PolicyAlerts() {
   }, []);
 
   useEffect(() => {
-    if (socket) {
-      socket.on('policy:new_alert', (alert: PolicyAlert) => {
-        setAlerts((prev) => [alert, ...prev]);
-      });
-
-      return () => {
-        socket.off('policy:new_alert');
-      };
-    }
+    if (!socket) return;
+    socket.on('policy:new_alert', (alert: PolicyAlert) => {
+      setAlerts((prev) => [alert, ...prev]);
+    });
+    return () => {
+      socket.off('policy:new_alert');
+    };
   }, [socket]);
 
   const fetchAlerts = async () => {

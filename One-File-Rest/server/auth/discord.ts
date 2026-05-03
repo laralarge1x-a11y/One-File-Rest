@@ -31,9 +31,9 @@ export const discordStrategy = clientID && clientSecret && callbackURL
         callbackURL,
         scope: ['identify', 'email'],
       },
-      async (
-        accessToken: string,
-        refreshToken: string,
+      (async (
+        _accessToken: string,
+        _refreshToken: string,
         profile: DiscordProfile,
         done: (err: Error | null, user?: any) => void
       ) => {
@@ -82,6 +82,6 @@ export const discordStrategy = clientID && clientSecret && callbackURL
           console.error('[Discord Strategy] Database error during OAuth:', err);
           return done(err instanceof Error ? err : new Error(String(err)));
         }
-      }
+      }) as any
     )
   : null;

@@ -31,7 +31,7 @@ export default function ComplianceScoreDashboard({ caseId }: { caseId: number })
   const fetchCompliance = async () => {
     try {
       const data = await api.get(`/api/compliance/score/${caseId}`);
-      setCompliance(data);
+      setCompliance(data as any);
     } catch (err) {
       console.error('Failed to fetch compliance:', err);
     } finally {
@@ -42,7 +42,7 @@ export default function ComplianceScoreDashboard({ caseId }: { caseId: number })
   const fetchHistory = async () => {
     try {
       const data = await api.get(`/api/compliance/history/${caseId}`);
-      setHistory(data);
+      setHistory(data as any[]);
     } catch (err) {
       console.error('Failed to fetch history:', err);
     }

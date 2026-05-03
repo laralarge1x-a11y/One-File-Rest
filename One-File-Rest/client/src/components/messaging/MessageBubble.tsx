@@ -1,5 +1,4 @@
-import React from 'react';
-import { formatTime } from '../../lib/utils';
+import { formatDateTime } from '../../lib/utils';
 
 interface MessageBubbleProps {
   content: string;
@@ -37,7 +36,7 @@ export default function MessageBubble({
       <div className={`max-w-xs lg:max-w-md ${isOwn ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-900'} rounded-lg p-3`}>
         {!isOwn && <p className="text-xs font-semibold mb-1 opacity-75">{sender}</p>}
         <p className="break-words">{content}</p>
-        <p className={`text-xs mt-1 ${isOwn ? 'text-blue-100' : 'text-gray-500'}`}>{formatTime(timestamp)}</p>
+        <p className={`text-xs mt-1 ${isOwn ? 'text-blue-100' : 'text-gray-500'}`}>{formatDateTime(timestamp)}</p>
       </div>
     </div>
   );

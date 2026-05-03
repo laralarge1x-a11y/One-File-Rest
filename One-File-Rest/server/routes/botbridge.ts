@@ -260,7 +260,7 @@ router.post('/ai/ask', async (req: Request, res: Response) => {
       actorDiscordId: staff_discord_id,
       action: 'ai_ask',
       targetType: 'ai_thread',
-      targetId: result.thread_id ? String(result.thread_id) : undefined,
+      targetId: result.thread_id ? Number(result.thread_id) : undefined,
       details: {
         surface: 'discord',
         q_preview: String(question).slice(0, 240),
