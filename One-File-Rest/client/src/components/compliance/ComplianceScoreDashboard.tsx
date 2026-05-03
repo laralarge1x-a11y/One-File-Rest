@@ -21,7 +21,8 @@ interface ComplianceData {
 export default function ComplianceScoreDashboard({ caseId }: { caseId: number }) {
   const [compliance, setCompliance] = useState<ComplianceData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [history, setHistory] = useState<any[]>([]);
+  interface ComplianceHistoryPoint { created_at: string; score: number; grade?: string }
+  const [history, setHistory] = useState<ComplianceHistoryPoint[]>([]);
 
   useEffect(() => {
     fetchCompliance();
@@ -30,8 +31,8 @@ export default function ComplianceScoreDashboard({ caseId }: { caseId: number })
 
   const fetchCompliance = async () => {
     try {
-      const data = await api.get(`/api/compliance/score/${caseId}`);
-      setCompliance(data as any);
+      const data = await api.get<ComplianceData>(`/api/compliance/score/${caseId}`);
+      setCompliance(data);
     } catch (err) {
       console.error('Failed to fetch compliance:', err);
     } finally {
@@ -41,8 +42,8 @@ export default function ComplianceScoreDashboard({ caseId }: { caseId: number })
 
   const fetchHistory = async () => {
     try {
-      const data = await api.get(`/api/compliance/history/${caseId}`);
-      setHistory(data as any[]);
+      const data = await api.get<ComplianceHistoryPoint[]>(`/api/compliance/history/${caseId}`);
+      setHistory(data);
     } catch (err) {
       console.error('Failed to fetch history:', err);
     }

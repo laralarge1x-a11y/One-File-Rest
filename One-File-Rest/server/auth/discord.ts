@@ -23,20 +23,20 @@ if (!clientID || !clientSecret || !callbackURL) {
   console.log('[Discord OAuth] Configured with redirect URI:', callbackURL);
 }
 
-export const discordStrategy = clientID && clientSecret && callbackURL
-  ? new DiscordStrategy(
-      {
-        clientID,
-        clientSecret,
-        callbackURL,
-        scope: ['identify', 'email'],
-      },
-      (async (
-        _accessToken: string,
-        _refreshToken: string,
-        profile: DiscordProfile,
-        done: (err: Error | null, user?: any) => void
-      ) => {
+function buildDiscordStrategy(): DiscordStrategy | null {
+  if (!clientID || !clientSecret || !callbackURL) return null;
+  const opts = {
+    clientID,
+    clientSecret,
+    callbackURL,
+    scope: ['identify', 'email'],
+  };
+  const verify = async (
+    _accessToken: string,
+    _refreshToken: string,
+    profile: DiscordProfile,
+    done: (err: Error | null, user?: Express.User) => void
+  ): Promise<void> => {
         try {
           console.log('[Discord Strategy] Received profile:', {
             id: profile.id,
@@ -82,6 +82,18 @@ export const discordStrategy = clientID && clientSecret && callbackURL
           console.error('[Discord Strategy] Database error during OAuth:', err);
           return done(err instanceof Error ? err : new Error(String(err)));
         }
-      }) as any
-    )
-  : null;
+  };
+  type Opts = typeof opts;
+  type Verify = (
+    accessToken: string,
+    refreshToken: string,
+    profile: DiscordProfile,
+    done: (err: Error | null, user?: Express.User) => void,
+  ) => Promise<void>;
+  // @types/passport-discord's 4-arg overload incorrectly requires
+  // passReqToCallback:true; the runtime accepts the simpler form.
+  const Ctor = DiscordStrategy as unknown as new (o: Opts, v: Verify) => DiscordStrategy;
+  return new Ctor(opts, verify);
+}
+
+export const discordStrategy = buildDiscordStrategy();
