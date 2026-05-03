@@ -11,7 +11,7 @@ import fs from 'fs';
 import pool from './db/client.js';
 import { setIO } from './socket-store.js';
 import { discordStrategy } from './auth/discord.js';
-import { requireAuth, requireStaff, requireAdmin } from './auth/middleware.js';
+import { requireAuth, requireStaff, requireAdmin, requireActiveStaff } from './auth/middleware.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -177,7 +177,7 @@ mount('/api/templates', requireStaff, templatesRoutes);
 mount('/api/policies', policiesRoutes);
 mount('/api/broadcast', requireStaff, broadcastRoutes);
 mount('/api/ai', requireAuth, aiRoutes);
-mount('/api/ai', requireStaff, aiAskRoutes);
+mount('/api/ai', requireActiveStaff, aiAskRoutes);
 mount('/api/analytics', requireStaff, analyticsRoutes);
 mount('/api/subscriptions', requireAuth, subscriptionsRoutes);
 mount('/api/compliance', requireAuth, complianceRoutes);
