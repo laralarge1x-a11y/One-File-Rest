@@ -175,6 +175,11 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName('persondossier')
+    .setDescription('Ask Elite — full dossier on a person (cases, history, Discord activity).')
+    .addUserOption((opt) => opt.setName('user').setDescription('The Discord user').setRequired(true))
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('dossier')
     .setDescription('AI brief on a case (staff only)')
     .addIntegerOption((opt) => opt.setName('case_id').setDescription('Case ID').setRequired(true))
@@ -458,7 +463,59 @@ client.once(Events.ClientReady, async (readyClient) => {
   await refreshChannelMap();
   // Refresh channel map every 5 minutes
   setInterval(refreshChannelMap, 5 * 60 * 1000);
+  // Run a one-time backfill of recent Discord history into discord_messages
+  // so Ask Elite can answer "what did this client say last week?" right after
+  // deploy. Bounded by AI_BACKFILL_DAYS and AI_BACKFILL_LIMIT_PER_CHANNEL
+  // (defaults: 7 days, 200 msgs/channel) to keep the API quota cheap.
+  backfillDiscordHistory().catch((e) => console.error('[Bot] Backfill failed:', e?.message));
 });
+
+async function backfillDiscordHistory() {
+  const days = parseInt(process.env.AI_BACKFILL_DAYS || '7', 10);
+  const perChannel = parseInt(process.env.AI_BACKFILL_LIMIT_PER_CHANNEL || '200', 10);
+  const cutoff = Date.now() - days * 86400_000;
+  const targets = new Set<string>([
+    ...channelUserMap.keys(),
+    ...AI_STAFF_CHANNELS,
+  ]);
+  if (targets.size === 0) {
+    console.log('[Bot] Backfill: no tracked channels yet — skipping.');
+    return;
+  }
+  let total = 0;
+  for (const channelId of targets) {
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (!channel || !('messages' in channel)) continue;
+      const fetched = await (channel as TextChannel).messages.fetch({ limit: Math.min(perChannel, 100) }).catch(() => null);
+      if (!fetched) continue;
+      const batch: any[] = [];
+      for (const msg of fetched.values()) {
+        if (msg.createdTimestamp < cutoff) continue;
+        batch.push({
+          id: msg.id,
+          channel_id: msg.channelId,
+          guild_id: msg.guildId,
+          author_discord_id: msg.author.id,
+          author_username: msg.author.username,
+          is_bot: msg.author.bot,
+          content: msg.content || '',
+          attachments: Array.from(msg.attachments.values()).map((a) => ({ id: a.id, url: a.url, name: a.name, size: a.size })),
+          embeds: msg.embeds.map((e) => ({ title: e.title, description: e.description, url: e.url })),
+          referenced_message_id: msg.reference?.messageId || null,
+          created_at: new Date(msg.createdTimestamp).toISOString(),
+          edited_at: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
+        });
+      }
+      if (batch.length === 0) continue;
+      await callBridge('POST', '/bot/discord-messages/bulk-ingest', { messages: batch });
+      total += batch.length;
+    } catch (err: any) {
+      console.warn(`[Bot] Backfill channel ${channelId} failed:`, err?.message);
+    }
+  }
+  console.log(`[Bot] Backfill complete: indexed ${total} historical messages across ${targets.size} channels (last ${days}d).`);
+}
 
 // ─── Customer button handlers (Submit New Case / My Cases / Help) ─────────
 async function handleCustomerButton(interaction: ButtonInteraction) {
@@ -566,12 +623,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'casestatus': await handleCaseStatus(interaction); break;
         case 'ask': await handleAsk(interaction); break;
         case 'dossier': await handleDossier(interaction); break;
+        case 'persondossier': await handlePersonDossier(interaction); break;
       }
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('etc:')) {
       await handleCustomerButton(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('ai:post:')) {
+      const ownerId = interaction.customId.split(':')[2];
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({ content: '🔒 Only the asker can post their own answer publicly.', ephemeral: true });
+        return;
+      }
+      // Find the most recent stash for this user (the customId doesn't carry
+      // the original interaction id since Discord limits length).
+      const key = [...pendingPublicPosts.keys()].reverse().find((k) => k.startsWith(ownerId + ':'));
+      const stash = key ? pendingPublicPosts.get(key) : null;
+      if (!stash) {
+        await interaction.reply({ content: '⚠️ Public-post window expired (answers cache for 10 min).', ephemeral: true });
+        return;
+      }
+      pendingPublicPosts.delete(key!);
+      await interaction.reply({ content: `**Ask Elite** · posted by <@${ownerId}>\n\n${chunkMessage(stash.answer)[0]}` });
+      const srcEmbed = buildSourcesEmbed(stash.sources);
+      if (srcEmbed && interaction.channel && 'send' in interaction.channel) await (interaction.channel as any).send({ embeds: [srcEmbed] });
       return;
     }
   } catch (err) {
@@ -588,6 +666,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 // ─── Ask Elite handlers (slash + @mention) ────────────────────────────────
+// Short-lived store: { ownerId:interactionId -> { answer, sources } }
+// for the "Post publicly" button. Auto-evicts after 10 min.
+const pendingPublicPosts = new Map<string, { answer: string; sources: any[] }>();
+setInterval(() => {
+  // Cap at 100 entries; rough TTL via FIFO drop.
+  while (pendingPublicPosts.size > 100) {
+    const k = pendingPublicPosts.keys().next().value;
+    if (k === undefined) break;
+    pendingPublicPosts.delete(k);
+  }
+}, 10 * 60 * 1000);
+
 function chunkMessage(s: string, max = 1900): string[] {
   if (s.length <= max) return [s];
   const out: string[] = [];
@@ -639,18 +729,56 @@ async function handleAsk(interaction: ChatInputCommandInteraction) {
   try {
     const result = await runAsk(question, interaction.user.id);
     const chunks = chunkMessage(result.answer);
-    await interaction.editReply({ content: chunks[0] });
+    // For ephemeral replies in staff-only-by-policy channels, surface a
+    // "Post publicly" button so the asker can opt-in to share.
+    const publicBtn = ephemeral && isStaffOnlyChannel(interaction.channelId)
+      ? null  // already in a staff channel; no need
+      : (ephemeral
+          ? new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`ai:post:${interaction.user.id}`)
+                .setLabel('Post publicly')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('📢')
+            )
+          : null);
+    const firstReply: any = { content: chunks[0] };
+    if (publicBtn) firstReply.components = [publicBtn];
+    await interaction.editReply(firstReply);
     for (let i = 1; i < chunks.length; i++) {
       await interaction.followUp({ content: chunks[i], ephemeral });
     }
     const srcEmbed = buildSourcesEmbed(result.sources || []);
     if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral });
+    // Stash the answer briefly so the Post Publicly button can re-emit it.
+    if (publicBtn) pendingPublicPosts.set(`${interaction.user.id}:${interaction.id}`, { answer: result.answer, sources: result.sources || [] });
   } catch (err: any) {
     const msg = err?.message || 'failed';
     const friendly = /not_staff/i.test(msg)
       ? '🔒 Ask Elite is staff-only. If you should have access, ping an owner to add you to the staff table.'
       : `❌ Ask Elite error: ${msg.slice(0, 300)}`;
     await interaction.editReply({ content: friendly });
+  }
+}
+
+async function handlePersonDossier(interaction: ChatInputCommandInteraction) {
+  const target = interaction.options.getUser('user', true);
+  const ephemeral = !isStaffOnlyChannel(interaction.channelId);
+  await interaction.deferReply({ ephemeral });
+  try {
+    const result = await runAsk(
+      `Build an executive dossier for the person <@${target.id}> (discord_id ${target.id}, username ${target.username}). Use getClientDossier. Cover: who they are, every case they've had, current standing/plan, recent portal + Discord activity, and the recommended next step. Under 280 words.`,
+      interaction.user.id,
+      { client_discord_id: target.id }
+    );
+    const chunks = chunkMessage(result.answer);
+    await interaction.editReply({ content: `**👤  Dossier · ${target.username}**\n\n${chunks[0]}` });
+    for (let i = 1; i < chunks.length; i++) await interaction.followUp({ content: chunks[i], ephemeral });
+    const srcEmbed = buildSourcesEmbed(result.sources || []);
+    if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral });
+  } catch (err: any) {
+    const msg = err?.message || 'failed';
+    await interaction.editReply({ content: /not_staff/i.test(msg) ? '🔒 Staff only.' : `❌ Dossier error: ${msg.slice(0, 300)}` });
   }
 }
 

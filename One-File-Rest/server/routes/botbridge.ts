@@ -299,6 +299,42 @@ router.post('/discord-messages/ingest', async (req: Request, res: Response) => {
   }
 });
 
+// Bulk variant for the bot-startup backfill. Accepts up to 500 messages in
+// one round-trip; uses the same upsert semantics so it's idempotent.
+router.post('/discord-messages/bulk-ingest', async (req: Request, res: Response) => {
+  try {
+    const { messages } = req.body || {};
+    if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages array required' });
+    const batch = messages.slice(0, 500);
+    let inserted = 0;
+    for (const m of batch) {
+      if (!m?.id || !m?.channel_id || !m?.author_discord_id) continue;
+      try {
+        await pool.query(
+          `INSERT INTO discord_messages
+             (id, channel_id, guild_id, author_discord_id, author_username, is_bot,
+              content, attachments, embeds, referenced_message_id, created_at, edited_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            BigInt(m.id), m.channel_id, m.guild_id || null,
+            m.author_discord_id, m.author_username || null, !!m.is_bot,
+            m.content || '', JSON.stringify(m.attachments || []), JSON.stringify(m.embeds || []),
+            m.referenced_message_id ? BigInt(m.referenced_message_id) : null,
+            m.created_at ? new Date(m.created_at) : new Date(),
+            m.edited_at ? new Date(m.edited_at) : null,
+          ]
+        );
+        inserted++;
+      } catch { /* swallow per-row errors so one bad row doesn't fail the batch */ }
+    }
+    res.json({ ok: true, accepted: batch.length, inserted });
+  } catch (err: any) {
+    console.error('[discord-messages/bulk-ingest] failed', err);
+    res.status(500).json({ error: err?.message || 'bulk ingest failed' });
+  }
+});
+
 router.post('/discord-messages/delete', async (req: Request, res: Response) => {
   try {
     const { id } = req.body || {};

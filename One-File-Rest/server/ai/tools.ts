@@ -527,15 +527,177 @@ const analyzeImage: ToolDef = {
   },
 };
 
+// ─── getCaseMessages ──────────────────────────────────────────────────────
+const getCaseMessages: ToolDef = {
+  name: 'getCaseMessages',
+  description: 'Fetch the full portal message thread for a case (chronological). Use this when a question requires reading what was actually said back-and-forth, not just summary fields on the case.',
+  parameters: {
+    type: 'object',
+    required: ['case_id'],
+    properties: {
+      case_id: { type: 'integer' },
+      limit: { type: 'integer', description: 'Default 50, max 100.' },
+    },
+  },
+  handler: async (a) => {
+    const id = Number(a.case_id);
+    if (!Number.isFinite(id)) return { ok: false, error: 'case_id required' };
+    const limit = Math.min(clamp(a.limit, 50, 100), 100);
+    const rows = (await pool.query(
+      `SELECT m.id, m.sender_type, m.sender_discord_id, m.content, m.attachments,
+              m.is_read, m.created_at, u.discord_username AS sender_username
+         FROM messages m LEFT JOIN users u ON u.discord_id = m.sender_discord_id
+         WHERE m.case_id = $1 ORDER BY m.created_at ASC LIMIT ${limit}`,
+      [id]
+    )).rows;
+    const sources: Source[] = [{
+      type: 'case', id, label: `Case #${id} · ${rows.length} portal messages`, url: caseUrl(id),
+    }];
+    return { ok: true, data: { count: rows.length, case_id: id, messages: rows.map((m: any) => ({ ...m, content: trunc(m.content, 400) })) }, sources };
+  },
+};
+
+// ─── getClientDossier ─────────────────────────────────────────────────────
+// Cross-source person dossier — combines profile, all cases, recent portal
+// messages, recent Discord activity, subscription history, audit footprint.
+const getClientDossier: ToolDef = {
+  name: 'getClientDossier',
+  description: 'Build a complete cross-source dossier for a person: profile, ALL their cases, recent portal messages, recent Discord activity in their assigned channel, subscriptions, and audit footprint. Use this for "tell me everything about <client>" or "what is going on with <name>" questions.',
+  parameters: {
+    type: 'object',
+    properties: {
+      discord_id: { type: 'string' },
+      discord_username: { type: 'string', description: 'Used for fuzzy lookup when discord_id unknown.' },
+    },
+  },
+  handler: async (a) => {
+    let u: any = null;
+    if (a.discord_id) {
+      u = (await pool.query(`SELECT * FROM users WHERE discord_id = $1`, [a.discord_id])).rows[0];
+    }
+    if (!u && a.discord_username) {
+      u = (await pool.query(
+        `SELECT * FROM users WHERE discord_username ILIKE $1 ORDER BY last_active DESC NULLS LAST LIMIT 1`,
+        [`%${String(a.discord_username).replace(/^@/, '')}%`]
+      )).rows[0];
+    }
+    if (!u) return { ok: false, error: 'client not found (try discord_id or full discord_username)' };
+    const [cases, subs, tiktokAccts, lastMsgs, lastDiscord, lastAudit] = await Promise.all([
+      pool.query(`SELECT id, violation_type, status, priority, appeal_deadline, account_username, outcome, created_at
+                    FROM cases WHERE user_discord_id = $1 ORDER BY created_at DESC LIMIT 25`, [u.discord_id]),
+      pool.query(`SELECT plan, status, start_date, end_date FROM subscriptions WHERE user_discord_id = $1 ORDER BY start_date DESC LIMIT 10`, [u.discord_id]),
+      pool.query(`SELECT username, account_url, is_primary FROM tiktok_accounts WHERE user_discord_id = $1`, [u.discord_id]),
+      pool.query(`SELECT id, case_id, sender_type, content, created_at FROM messages
+                    WHERE sender_discord_id = $1 OR case_id IN (SELECT id FROM cases WHERE user_discord_id = $1)
+                    ORDER BY created_at DESC LIMIT 12`, [u.discord_id]),
+      u.discord_channel_id
+        ? pool.query(`SELECT id, author_username, content, created_at FROM discord_messages
+                        WHERE channel_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 15`, [u.discord_channel_id])
+        : { rows: [] } as any,
+      pool.query(`SELECT action, target_type, target_id, created_at FROM audit_log
+                    WHERE actor_discord_id = $1 OR (details->>'user_discord_id') = $1
+                    ORDER BY created_at DESC LIMIT 10`, [u.discord_id]),
+    ]);
+    const sources: Source[] = [{ type: 'client', id: u.id, label: `${u.discord_username} (${u.discord_id})`, url: clientUrl(u.id) }];
+    for (const c of cases.rows.slice(0, 10)) sources.push({ type: 'case', id: c.id, label: `Case #${c.id} · ${c.status}`, url: caseUrl(c.id) });
+    if (lastDiscord.rows.length) sources.push({ type: 'discord', id: u.discord_channel_id, label: `Discord channel · ${lastDiscord.rows.length} recent msgs` });
+    return {
+      ok: true,
+      data: {
+        client: u,
+        all_cases: cases.rows,
+        subscriptions: subs.rows,
+        tiktok_accounts: tiktokAccts.rows,
+        recent_portal_messages: lastMsgs.rows.map((m: any) => ({ ...m, content: trunc(m.content, 300) })),
+        recent_discord_messages: lastDiscord.rows.map((m: any) => ({ ...m, id: String(m.id), content: trunc(m.content, 300) })),
+        recent_audit: lastAudit.rows,
+      },
+      sources,
+    };
+  },
+};
+
+// ─── compareCases ─────────────────────────────────────────────────────────
+const compareCases: ToolDef = {
+  name: 'compareCases',
+  description: 'Side-by-side comparison of 2-5 cases (status, violation, deadline, evidence count, AI score, outcome). Use for "what do these denied cases have in common?" or "why did X win and Y lose?".',
+  parameters: {
+    type: 'object',
+    required: ['case_ids'],
+    properties: {
+      case_ids: { type: 'array', items: { type: 'integer' }, description: 'Between 2 and 5 case ids.' },
+    },
+  },
+  handler: async (a) => {
+    const ids = (Array.isArray(a.case_ids) ? a.case_ids : []).map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n)).slice(0, 5);
+    if (ids.length < 2) return { ok: false, error: 'Provide 2–5 case_ids' };
+    const rows = (await pool.query(
+      `SELECT c.id, c.violation_type, c.status, c.outcome, c.priority,
+              c.appeal_deadline, c.account_username, c.user_discord_id,
+              LEFT(c.violation_description, 240) AS desc,
+              (SELECT COUNT(*) FROM evidence WHERE case_id = c.id)::int AS evidence_count,
+              (SELECT score FROM compliance_scores WHERE case_id = c.id ORDER BY created_at DESC LIMIT 1) AS latest_score
+         FROM cases c WHERE c.id = ANY($1::int[]) ORDER BY c.id`,
+      [ids]
+    )).rows;
+    const sources: Source[] = rows.map((c: any) => ({ type: 'case', id: c.id, label: `Case #${c.id} · ${c.status}`, url: caseUrl(c.id) }));
+    return { ok: true, data: { count: rows.length, comparison: rows }, sources };
+  },
+};
+
+// ─── runAiTool (proxy to existing /api/ai/*) ──────────────────────────────
+// Lets the orchestrator reuse the per-feature AI endpoints (case-summary,
+// generate-appeal, policy-explainer, etc.) instead of re-implementing them.
+// Strictly read-only — only whitelisted tool names that don't mutate.
+const SAFE_AI_TOOLS = new Set([
+  'analyze-violation', 'case-summary', 'policy-explainer',
+]);
+const runAiTool: ToolDef = {
+  name: 'runAiTool',
+  description: 'Call one of the existing portal AI utility endpoints for a deeper specialist read (whitelisted: analyze-violation, case-summary, policy-explainer). Returns the model output verbatim. Read-only — never use generate-appeal or anything that mutates.',
+  parameters: {
+    type: 'object',
+    required: ['tool', 'input'],
+    properties: {
+      tool: { type: 'string', description: 'analyze-violation | case-summary | policy-explainer' },
+      input: { type: 'object', description: 'Body to pass through (free-form per tool).' },
+    },
+  },
+  handler: async (a) => {
+    const name = String(a.tool || '');
+    if (!SAFE_AI_TOOLS.has(name)) return { ok: false, error: `runAiTool: '${name}' is not in the read-only whitelist` };
+    try {
+      const { default: fetch } = await import('node-fetch') as any;
+      const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/ai/${name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Internal-Bridge': process.env.BOT_BRIDGE_TOKEN || '' },
+        body: JSON.stringify(a.input || {}),
+      });
+      const data: any = await r.json().catch(() => ({}));
+      if (!r.ok) return { ok: false, error: data?.error || `runAiTool ${name} failed (${r.status})` };
+      return { ok: true, data: { tool: name, result: data }, sources: [] };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || 'runAiTool failed' };
+    }
+  },
+};
+
 // ─── Registry ─────────────────────────────────────────────────────────────
 export const TOOLS: ToolDef[] = [
-  searchCases, getCase, searchPortalMessages,
+  searchCases, getCase, getCaseMessages,
+  searchPortalMessages,
   searchDiscord, getDiscordTranscript,
-  searchClients, getClient,
+  searchClients, getClient, getClientDossier,
   searchKB, getKBArticle, searchTemplates,
   searchAuditLog, getDeadlines, searchPolicyAlerts,
   listStaff, analyzeImage,
+  compareCases,
+  // runAiTool intentionally omitted from the registry: the /api/ai/* utility
+  // endpoints use session auth, so a server-to-server proxy would require an
+  // additional internal auth path that isn't worth the surface area for a
+  // nice-to-have. The orchestrator's other 18 tools cover all current needs.
 ];
+void runAiTool;
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 

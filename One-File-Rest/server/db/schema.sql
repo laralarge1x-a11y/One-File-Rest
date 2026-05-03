@@ -468,9 +468,13 @@ CREATE TABLE IF NOT EXISTS ai_threads (
   title VARCHAR(200),
   surface VARCHAR(20) NOT NULL DEFAULT 'web' CHECK (surface IN ('web', 'discord')),
   total_tokens INTEGER DEFAULT 0,
+  pinned BOOLEAN DEFAULT false,
+  shared_with TEXT[] DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE ai_threads ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT false;
+ALTER TABLE ai_threads ADD COLUMN IF NOT EXISTS shared_with TEXT[] DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_ai_threads_owner ON ai_threads(owner_discord_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS ai_messages (

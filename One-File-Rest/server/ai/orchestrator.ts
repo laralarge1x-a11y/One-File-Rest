@@ -112,6 +112,19 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
   const started = Date.now();
   const ctx: ToolContext = { staffDiscordId: input.staffDiscordId, staffRole: input.staffRole, surface: input.surface };
 
+  // ── Per-staffer rate limit ──
+  // Hard cap on queries-per-minute (default 20) to prevent a runaway loop or
+  // a UI bug from spamming the orchestrator.
+  const RATE_LIMIT_PER_MIN = parseInt(process.env.AI_RATE_LIMIT_PER_MIN || '20', 10);
+  const recentCount = Number((await pool.query(
+    `SELECT COUNT(*)::int AS c FROM ai_query_log WHERE staff_discord_id = $1 AND created_at > NOW() - INTERVAL '60 seconds'`,
+    [input.staffDiscordId]
+  )).rows[0]?.c || 0);
+  if (recentCount >= RATE_LIMIT_PER_MIN) {
+    emit({ type: 'error', message: `Slow down — Ask Elite is capped at ${RATE_LIMIT_PER_MIN} queries/minute per staffer.` });
+    return;
+  }
+
   // Cost guardrails
   const dailyUsed = await dailyTokensFor(input.staffDiscordId);
   if (dailyUsed >= PER_STAFFER_DAILY_CAP) {
@@ -216,7 +229,55 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       finalAnswer = 'I gathered the data but ran out of reasoning steps before composing a final answer. Please refine the question or break it into smaller parts.';
     }
 
+    // ── Citation enforcement ──
+    // If the model produced a factual answer with zero sources (no tool calls
+    // ever fired), force one retry that explicitly tells it to ground via
+    // tools or refuse. This catches "hallucinated" answers that bypass our
+    // retrieval layer. Trivial / chitchat replies (under ~120 chars) skip
+    // this guard.
+    const looksFactual = finalAnswer.length > 120 && !/^(hi|hello|hey|sure|okay|ok|got it|thanks)/i.test(finalAnswer.trim());
+    if (allSources.length === 0 && toolsUsed.length === 0 && looksFactual) {
+      messages.push({ role: 'assistant', content: finalAnswer });
+      messages.push({
+        role: 'user',
+        content: 'STOP. That answer cited zero portal data. You MUST call at least one tool (searchCases, getClientDossier, searchDiscord, etc.) before making factual claims about this organisation. Re-answer using tools, or — if no tool can answer it — say "I don\'t have data on that" and suggest where the staffer could look manually.',
+      });
+      const retry = await groqTool({ messages, tools, temperature: 0.2, maxTokens: 1500 });
+      totalIn += retry.tokens_in;
+      totalOut += retry.tokens_out;
+      if (retry.tool_calls.length > 0) {
+        messages.push({
+          role: 'assistant', content: retry.content || null,
+          tool_calls: retry.tool_calls.map((c) => ({
+            id: c.id, type: 'function',
+            function: { name: c.name, arguments: JSON.stringify(c.args) },
+          })),
+        });
+        for (const call of retry.tool_calls) {
+          emit({ type: 'step', tool: call.name, args: call.args });
+          const result = await runTool(call.name, call.args, ctx);
+          toolsUsed.push(call.name);
+          if (result.sources) allSources.push(...result.sources);
+          emit({ type: 'tool_result', tool: call.name, ok: result.ok, summary: summarizeToolResult(call.name, result) });
+          let payload = JSON.stringify(result);
+          if (payload.length > MAX_TOOL_RESULT_CHARS) payload = payload.slice(0, MAX_TOOL_RESULT_CHARS) + '...[truncated]';
+          messages.push({ role: 'tool', tool_call_id: call.id, content: payload });
+        }
+        const finalRetry = await groqTool({ messages, tools: [], temperature: 0.2, maxTokens: 1200 });
+        totalIn += finalRetry.tokens_in;
+        totalOut += finalRetry.tokens_out;
+        finalAnswer = finalRetry.content || finalAnswer;
+      } else {
+        finalAnswer = retry.content || finalAnswer;
+      }
+    }
+
     const sources = dedupeSources(allSources);
+    // Final guard: if there are still no sources and the model is asserting
+    // facts, prepend a clear "ungrounded" warning so the staffer knows.
+    if (sources.length === 0 && looksFactual) {
+      finalAnswer = '⚠️ _No portal sources back this answer — treat as opinion only._\n\n' + finalAnswer;
+    }
     emit({ type: 'sources', sources });
     emit({ type: 'token', text: finalAnswer });
 

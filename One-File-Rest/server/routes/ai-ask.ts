@@ -105,6 +105,29 @@ router.get('/threads/:id', async (req: Request, res: Response) => {
   }
 });
 
+// ─── PATCH /threads/:id  (rename / pin / share) ──────────────────────────
+router.patch('/threads/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { title, pinned, shared_with } = req.body || {};
+    const sets: string[] = []; const params: any[] = []; let i = 1;
+    if (typeof title === 'string') { sets.push(`title = $${i++}`); params.push(title.slice(0, 200)); }
+    if (typeof pinned === 'boolean') { sets.push(`pinned = $${i++}`); params.push(pinned); }
+    if (Array.isArray(shared_with)) { sets.push(`shared_with = $${i++}`); params.push(shared_with.slice(0, 25).map(String)); }
+    if (sets.length === 0) return res.status(400).json({ error: 'no fields to update' });
+    params.push(id, req.user!.discord_id);
+    const r = await pool.query(
+      `UPDATE ai_threads SET ${sets.join(', ')}, updated_at = NOW()
+         WHERE id = $${i++} AND owner_discord_id = $${i} RETURNING *`,
+      params
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not found or not owner' });
+    res.json({ thread: r.rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'failed' });
+  }
+});
+
 // ─── DELETE /threads/:id ──────────────────────────────────────────────────
 router.delete('/threads/:id', async (req: Request, res: Response) => {
   try {
