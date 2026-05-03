@@ -810,22 +810,32 @@ client.on(Events.MessageCreate, async (message: Message) => {
     if (cleaned.length > 1) {
       const isDM = !message.guildId;
       const isStaffChan = isStaffOnlyChannel(message.channelId);
-      if (!isDM && !isStaffChan) {
-        try {
-          await message.reply({ content: '🔒 To protect client confidentiality, I only answer @mentions in staff-only channels or DMs. Use `/ask` here for an ephemeral reply, or DM me directly.' });
-        } catch {}
-        return;
-      }
-      try { await message.channel.sendTyping(); } catch {}
+      const replyPublicly = isDM || isStaffChan;
+      try { if ('sendTyping' in message.channel) await (message.channel as TextChannel).sendTyping(); } catch {}
       try {
         const result = await runAsk(cleaned, message.author.id);
         const chunks = chunkMessage(result.answer);
-        await message.reply({ content: chunks[0] });
-        for (let i = 1; i < chunks.length; i++) {
-          if ('send' in message.channel) await (message.channel as any).send({ content: chunks[i] });
-        }
         const srcEmbed = buildSourcesEmbed(result.sources || []);
-        if (srcEmbed && 'send' in message.channel) await (message.channel as any).send({ embeds: [srcEmbed] });
+        if (replyPublicly) {
+          await message.reply({ content: chunks[0] });
+          for (let i = 1; i < chunks.length; i++) {
+            if ('send' in message.channel) await (message.channel as TextChannel).send({ content: chunks[i] });
+          }
+          if (srcEmbed && 'send' in message.channel) await (message.channel as TextChannel).send({ embeds: [srcEmbed] });
+        } else {
+          let dmFailed = false;
+          try {
+            const dm = await message.author.createDM();
+            await dm.send({ content: `**Ask Elite** · for your @mention in <#${message.channelId}>\n\n${chunks[0]}` });
+            for (let i = 1; i < chunks.length; i++) await dm.send({ content: chunks[i] });
+            if (srcEmbed) await dm.send({ embeds: [srcEmbed] });
+          } catch { dmFailed = true; }
+          try {
+            await message.reply({ content: dmFailed
+              ? '🔒 To keep client data confidential I tried to DM you the answer but your DMs are closed. Open DMs from this server, use `/ask` for an ephemeral reply, or DM me directly.'
+              : '📬 Sent the answer to your DMs (kept private to protect client data).' });
+          } catch {}
+        }
       } catch (err: any) {
         const msg = err?.message || 'failed';
         const friendly = /not_staff/i.test(msg)

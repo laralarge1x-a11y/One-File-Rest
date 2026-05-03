@@ -263,6 +263,44 @@ export async function groqTool(opts: {
   }
 }
 
+export async function groqStreamFinal(opts: {
+  messages: GroqToolMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  onToken: (chunk: string) => void;
+}): Promise<{ content: string; tokens_in: number; tokens_out: number }> {
+  if (!groq) throw new Error('AI features are unavailable: GROQ_API_KEY not configured.');
+  const { messages, temperature = 0.2, maxTokens = 1500, onToken } = opts;
+  let full = '';
+  let tokens_in = 0;
+  let tokens_out = 0;
+  try {
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: messages as any,
+      temperature,
+      max_tokens: maxTokens,
+      stream: true,
+    });
+    for await (const chunk of stream as any) {
+      const delta: string = chunk?.choices?.[0]?.delta?.content || '';
+      if (delta) {
+        full += delta;
+        onToken(delta);
+      }
+      const usage = chunk?.x_groq?.usage || chunk?.usage;
+      if (usage) {
+        tokens_in = usage.prompt_tokens || tokens_in;
+        tokens_out = usage.completion_tokens || tokens_out;
+      }
+    }
+    return { content: full, tokens_in, tokens_out };
+  } catch (err) {
+    console.error('Groq stream API error:', err);
+    throw new Error(`Failed to stream completion: ${err instanceof Error ? err.message : 'Unknown error'}`);
+  }
+}
+
 /**
  * Batch process multiple requests with rate limiting
  */

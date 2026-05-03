@@ -24,7 +24,7 @@ interface AssistantMessage {
   pending?: boolean;
   errored?: boolean;
 }
-interface ThreadSummary { id: number; title: string; updated_at: string; message_count: number }
+interface ThreadSummary { id: number; title: string; updated_at: string; message_count: number; pinned?: boolean }
 
 const SUGGESTIONS = [
   'Which cases have an appeal deadline in the next 48 hours?',
@@ -248,13 +248,37 @@ export default function AskElitePanel() {
 
       {/* History panel */}
       {showHistory && (
-        <div style={{ padding: 10, borderBottom: '1px solid #1d1d22', maxHeight: 240, overflowY: 'auto' }}>
+        <div style={{ padding: 10, borderBottom: '1px solid #1d1d22', maxHeight: 280, overflowY: 'auto' }}>
           {threads.length === 0 && <div style={{ color: '#666', fontSize: 12, padding: 8 }}>No saved threads yet.</div>}
-          {threads.map((t) => (
-            <div key={t.id} onClick={() => loadThread(t.id)}
-              style={{ padding: '8px 10px', borderRadius: 6, fontSize: 12, color: '#bbb', cursor: 'pointer', background: t.id === threadId ? '#1a1a22' : 'transparent', marginBottom: 4 }}>
-              <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || `Thread #${t.id}`}</div>
-              <div style={{ fontSize: 10, color: '#666', marginTop: 2 }}>{t.message_count} msg · {new Date(t.updated_at).toLocaleString()}</div>
+          {threads
+            .slice()
+            .sort((a, b) => Number(b.pinned || 0) - Number(a.pinned || 0))
+            .map((t) => (
+            <div key={t.id}
+              style={{ padding: '8px 10px', borderRadius: 6, fontSize: 12, color: '#bbb', background: t.id === threadId ? '#1a1a22' : 'transparent', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div onClick={() => loadThread(t.id)} style={{ flex: 1, cursor: 'pointer', overflow: 'hidden' }}>
+                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {t.pinned ? '📌 ' : ''}{t.title || `Thread #${t.id}`}
+                </div>
+                <div style={{ fontSize: 10, color: '#666', marginTop: 2 }}>{t.message_count} msg · {new Date(t.updated_at).toLocaleString()}</div>
+              </div>
+              <button title="Rename" style={iconBtn} onClick={async () => {
+                const name = window.prompt('New thread title:', t.title || '');
+                if (name == null) return;
+                await fetch(`/api/ai/threads/${t.id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: name }) });
+                setThreads((cur) => cur.map((x) => x.id === t.id ? { ...x, title: name } : x));
+              }}>✎</button>
+              <button title={t.pinned ? 'Unpin' : 'Pin'} style={iconBtn} onClick={async () => {
+                const next = !t.pinned;
+                await fetch(`/api/ai/threads/${t.id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: next }) });
+                setThreads((cur) => cur.map((x) => x.id === t.id ? { ...x, pinned: next } : x));
+              }}>{t.pinned ? '📍' : '📌'}</button>
+              <button title="Delete" style={iconBtn} onClick={async () => {
+                if (!window.confirm('Delete this thread?')) return;
+                await fetch(`/api/ai/threads/${t.id}`, { method: 'DELETE', credentials: 'include' });
+                setThreads((cur) => cur.filter((x) => x.id !== t.id));
+                if (t.id === threadId) newThread();
+              }}>🗑</button>
             </div>
           ))}
         </div>
@@ -287,15 +311,21 @@ export default function AskElitePanel() {
             ) : (
               <div>
                 {(m.steps || []).length > 0 && (
-                  <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    {(m.steps || []).map((s, i) => (
-                      <div key={i} style={{ fontSize: 11, color: s.ok === false ? '#ed4245' : s.ok ? '#57f287' : '#7a7a85' }}>
-                        {s.ok === undefined ? '⋯ ' : s.ok ? '✓ ' : '✗ '}
-                        <code style={code}>{s.tool}</code>
-                        {s.summary && <span style={{ color: '#666' }}> · {s.summary}</span>}
-                      </div>
-                    ))}
-                  </div>
+                  <details style={{ marginBottom: 8 }} open={m.pending}>
+                    <summary style={{ fontSize: 11, color: '#7a7a85', cursor: 'pointer', listStyle: 'none', userSelect: 'none' }}>
+                      🔎 Investigation · {(m.steps || []).length} step{(m.steps || []).length === 1 ? '' : 's'}
+                      {m.pending && <span style={{ color: '#5865F2' }}> · running…</span>}
+                    </summary>
+                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3, paddingLeft: 12, borderLeft: '2px solid #26262e' }}>
+                      {(m.steps || []).map((s, i) => (
+                        <div key={i} style={{ fontSize: 11, color: s.ok === false ? '#ed4245' : s.ok ? '#57f287' : '#7a7a85' }}>
+                          {s.ok === undefined ? '⋯ ' : s.ok ? '✓ ' : '✗ '}
+                          <code style={code}>{s.tool}</code>
+                          {s.summary && <span style={{ color: '#666' }}> · {s.summary}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
                 <div style={{ fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap', color: m.errored ? '#ed4245' : '#e7e7ea' }}>
                   {m.content || (m.pending ? '…' : '')}

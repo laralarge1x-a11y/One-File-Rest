@@ -187,9 +187,14 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
         return;
       }
 
-      const resp = await groqTool({ messages, tools, temperature: 0.2, maxTokens: 1500 });
+      const resp = await groqTool({ messages, tools, temperature: 0.2, maxTokens: 1500, toolChoice: step === 0 ? 'auto' : 'auto' });
       totalIn += resp.tokens_in;
       totalOut += resp.tokens_out;
+
+      if (resp.tool_calls.length === 0) {
+        finalAnswer = resp.content || '';
+        break;
+      }
 
       if (resp.tool_calls.length > 0) {
         // Push the assistant's tool-call turn into the convo so the model
@@ -219,20 +224,17 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
         }
         continue; // ask the model again with tool results in context
       }
-
-      // No more tool calls — this is the final answer.
-      finalAnswer = resp.content || '';
-      break;
     }
 
     if (!finalAnswer) {
       finalAnswer = 'I gathered the data but ran out of reasoning steps before composing a final answer. Please refine the question or break it into smaller parts.';
     }
 
-    const looksFactual = finalAnswer.length > 120 && !/^(hi|hello|hey|sure|okay|ok|got it|thanks)/i.test(finalAnswer.trim());
+    const REFUSAL_RX = /^(i (?:do not|don't) (?:have|know)|i cannot|i can't|no data|sorry,? i|hi|hello|hey|sure|okay|ok\b|got it|thanks)/i;
+    const isRefusalOrTrivial = (text: string) => text.trim().length < 40 || REFUSAL_RX.test(text.trim());
 
     const validateGrounding = (text: string, srcCount: number): { ok: true } | { ok: false; reason: string } => {
-      if (!looksFactual) return { ok: true };
+      if (isRefusalOrTrivial(text)) return { ok: true };
       if (srcCount === 0) return { ok: false, reason: 'no tool calls were made — no portal data backs this answer' };
       const cites = Array.from(text.matchAll(/\[#(\d+)\]/g)).map((m) => parseInt(m[1], 10));
       if (cites.length === 0) return { ok: false, reason: 'no inline [#N] citation markers found' };
@@ -286,13 +288,34 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       sources = dedupeSources(allSources);
       check = validateGrounding(finalAnswer, sources.length);
     }
-    if (!check.ok && looksFactual) {
+    if (!check.ok && !isRefusalOrTrivial(finalAnswer)) {
       finalAnswer = `I cannot answer that with confidence — ${check.reason}. Please rephrase the question, or check the portal directly for the relevant case/client.`;
       sources = dedupeSources(allSources);
     }
 
     emit({ type: 'sources', sources });
-    emit({ type: 'token', text: finalAnswer });
+    // True token-by-token streaming for the final answer. We re-issue the
+    // synthesis call without tools so the model commits to a final answer
+    // and we stream deltas directly from Groq to the SSE client.
+    try {
+      const { groqStreamFinal } = await import('../services/groq');
+      const streamMessages: typeof messages = [
+        ...messages,
+        { role: 'user', content: `Now produce the FINAL answer for the staffer using the tool results above. Use inline [#N] citations matching the source order (${sources.length} source${sources.length === 1 ? '' : 's'} available). The previously drafted answer was:\n\n${finalAnswer}\n\nReturn the same answer (or a corrected version), nothing else.` },
+      ];
+      const streamed = await groqStreamFinal({
+        messages: streamMessages,
+        temperature: 0.2,
+        maxTokens: 1500,
+        onToken: (delta) => emit({ type: 'token', text: delta }),
+      });
+      totalIn += streamed.tokens_in;
+      totalOut += streamed.tokens_out;
+      if (streamed.content) finalAnswer = streamed.content;
+    } catch (streamErr) {
+      console.warn('[orchestrator] streaming failed, falling back to single emit:', (streamErr as Error)?.message);
+      emit({ type: 'token', text: finalAnswer });
+    }
 
     // Persist the assistant turn
     await pool.query(

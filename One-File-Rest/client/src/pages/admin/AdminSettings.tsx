@@ -18,6 +18,10 @@ export default function AdminSettings() {
   const [systemStats, setSystemStats] = useState<any>(null);
   const [webhookLogs, setWebhookLogs] = useState<any>({ logs: [], stats: {} });
   const [testUrl, setTestUrl] = useState('');
+  const [aiUsage, setAiUsage] = useState<{ me?: { tokens: number; queries: number; avg_ms: number }; caps?: { per_thread: number; daily: number; max_steps: number }; tools_available?: number; top_users_7d?: Array<{ staff_discord_id: string; queries: number; tokens: number }> } | null>(null);
+  useEffect(() => {
+    fetch('/api/ai/usage', { credentials: 'include' }).then((r) => r.ok ? r.json() : null).then(setAiUsage).catch(() => {});
+  }, []);
   const [testResult, setTestResult] = useState('');
   const [testing, setTesting] = useState(false);
   const [clearingLogs, setClearingLogs] = useState(false);
@@ -98,6 +102,53 @@ export default function AdminSettings() {
             <div style={{ marginTop: '14px', background: '#0d1a0d', border: '1px solid #57F28730', borderRadius: '8px', padding: '12px 16px', fontSize: '12px', color: '#57F287' }}>
               💡 To set environment variables, go to the <strong>Secrets</strong> panel in your Replit project.
             </div>
+          </div>
+
+          {/* Ask Elite usage */}
+          <div style={S.card}>
+            <div style={S.sectionTitle}>✨ Ask Elite — usage today</div>
+            {!aiUsage ? (
+              <div style={{ color: '#666', fontSize: 12 }}>No usage data yet (or AI features unavailable).</div>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+                  <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#777', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Tokens (you · 24h)</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{(aiUsage.me?.tokens ?? 0).toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>cap {(aiUsage.caps?.daily ?? 0).toLocaleString()}</div>
+                    <div style={{ marginTop: 8, height: 6, background: '#0a0a0a', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ width: `${Math.min(100, ((aiUsage.me?.tokens || 0) / Math.max(1, aiUsage.caps?.daily || 1)) * 100).toFixed(1)}%`, height: '100%', background: 'linear-gradient(90deg, #5865F2, #EB459E)' }} />
+                    </div>
+                  </div>
+                  <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#777', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Queries (you · 24h)</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{aiUsage.me?.queries ?? 0}</div>
+                    <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>avg {aiUsage.me?.avg_ms ?? 0} ms</div>
+                  </div>
+                  <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#777', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Per-thread cap</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{(aiUsage.caps?.per_thread ?? 0).toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>tokens · {aiUsage.caps?.max_steps ?? 0} max steps</div>
+                  </div>
+                  <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: '#777', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Tools available</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{aiUsage.tools_available ?? 0}</div>
+                    <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>read-only</div>
+                  </div>
+                </div>
+                {(aiUsage.top_users_7d?.length || 0) > 0 && (
+                  <div style={{ marginTop: 14, background: '#0f0f0f', borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontSize: 11, color: '#777', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Top users (7d)</div>
+                    {aiUsage.top_users_7d!.slice(0, 5).map((u) => (
+                      <div key={u.staff_discord_id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', color: '#bbb' }}>
+                        <span><code style={{ fontSize: 11, color: '#888' }}>{u.staff_discord_id}</code></span>
+                        <span>{u.queries} q · {u.tokens.toLocaleString()} tok</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           {/* System Stats */}
