@@ -270,6 +270,18 @@ router.patch('/:id', async (req: Request, res: Response) => {
         caseId: parseInt(id),
         actionUrl: `/cases/${id}`,
       });
+      // Escalation also pushes to the assigned staffer (FCM on native).
+      const ESCALATED = ['escalated', 'awaiting_tiktok', 'response_received'];
+      if (ESCALATED.includes(status) && oldCase.staff_assigned_id) {
+        createNotification({
+          userDiscordId: oldCase.staff_assigned_id,
+          type: 'case_escalated',
+          title: `Case #${id} → ${status.replace(/_/g, ' ')}`,
+          message: 'Needs your attention.',
+          caseId: parseInt(id),
+          actionUrl: `/admin/cases/${id}`,
+        });
+      }
       emitCaseStatusChanged(parseInt(id), { caseId: parseInt(id), oldStatus: oldCase.status, newStatus: status });
     }
 

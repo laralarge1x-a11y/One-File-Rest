@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useSocket } from '../../hooks/useSocket';
 import { CaseTimeline, AISummaryPanel } from '../../components/case';
+import MobileCameraButton from '../../components/admin/MobileCameraButton';
 
 const STATUS_OPTIONS = [
   'pending', 'intake', 'profile_built', 'appeal_drafted',
@@ -492,7 +493,14 @@ export default function CaseWorkspace() {
                 </div>
               )}
               {centerTab === 'evidence' && (
-                (detail.evidence?.length ?? 0) > 0 ? (
+                <>
+                  <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                    <MobileCameraButton
+                      caseId={detail.id}
+                      onUploaded={() => { if (selectedId) void fetchDetail(selectedId); }}
+                    />
+                  </div>
+                  {(detail.evidence?.length ?? 0) > 0 ? (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
                     {(detail.evidence ?? []).map((e) => {
                       const isImg = (e.file_type || '').includes('image') || /^data:image/.test(e.file_url);
@@ -542,7 +550,8 @@ export default function CaseWorkspace() {
                       );
                     })}
                   </div>
-                ) : <div style={{ color: '#555', fontSize: 13 }}>No evidence files for this case.</div>
+                ) : <div style={{ color: '#555', fontSize: 13 }}>No evidence files for this case.</div>}
+                </>
               )}
               {centerTab === 'messages' && (
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

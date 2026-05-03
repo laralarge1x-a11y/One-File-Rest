@@ -27,13 +27,27 @@ router.get('/:caseId', async (req: Request, res: Response) => {
   }
 });
 
+// 8 MB cap on inline data URLs to prevent DoS through unbounded camera/share uploads.
+const MAX_DATA_URL_BYTES = 8 * 1024 * 1024;
+
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { case_id, file_url, file_name, file_type, description, cloudinary_public_id, thumbnail_url } = req.body;
+    const { case_id, file_name, file_type, description, cloudinary_public_id, thumbnail_url, base64 } = req.body;
+    let { file_url } = req.body;
     const discordId = req.user!.discord_id;
     const isStaff = ['support', 'case_manager', 'owner', 'admin'].includes(req.user!.role);
 
-    if (!case_id || !file_url) return res.status(400).json({ error: 'case_id and file_url required' });
+    if (!file_url && typeof base64 === 'string' && base64.length > 0) {
+      file_url = /^data:/.test(base64)
+        ? base64
+        : `data:${file_type || 'application/octet-stream'};base64,${base64}`;
+    }
+
+    if (!case_id || !file_url) return res.status(400).json({ error: 'case_id and file_url (or base64) required' });
+
+    if (typeof file_url === 'string' && file_url.startsWith('data:') && file_url.length > MAX_DATA_URL_BYTES) {
+      return res.status(413).json({ error: `Inline upload too large (max ${MAX_DATA_URL_BYTES} bytes). Use Cloudinary upload instead.` });
+    }
 
     const caseResult = await pool.query('SELECT user_discord_id FROM cases WHERE id = $1', [case_id]);
     if (caseResult.rows.length === 0) return res.status(404).json({ error: 'Case not found' });

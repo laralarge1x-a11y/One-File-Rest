@@ -127,6 +127,43 @@ Premium dark-theme customer portal redesign:
   client-side upload endpoint, so the UI clearly tells users files will be
   attached afterwards in their Discord case channel.
 
+## Mobile Admin App (Task #3, May 2026)
+
+Native Android APK that wraps the existing admin portal via Capacitor 6.
+Source lives in `One-File-Rest/mobile/` (gitignored `android/` + `www/`
+generated at build time on a workstation — Android SDK is NOT available in
+the Replit container).
+
+- **Capacitor config** — `mobile/capacitor.config.ts`, appId
+  `club.elitetok.admin`. `server.url` defaults to the deployed Replit URL
+  so a normal `vite build` + redeploy ships UI changes to staff phones on
+  next open.
+- **Plugins** — push-notifications (FCM), native-biometric, camera,
+  send-intent, browser, app, splash, status-bar, badge.
+- **Build scripts** (root `package.json`): `pnpm run build:android`
+  (debug APK), `pnpm run build:android:release` (signed APK + AAB),
+  `pnpm run android:open`, `pnpm run android:run`. All require Android
+  Studio + JDK 17 on the workstation.
+- **Native bridge** — `client/src/lib/native.ts` exposes `isNative()`,
+  biometric unlock, FCM init + deep-link, hardware back, share intent,
+  camera, badge count. Every plugin import goes through `nativeImport()`
+  (variable-indirected `import()`) so Vite never tries to resolve them at
+  web build time.
+- **App wiring** — `client/src/hooks/useNativeBridge.ts` is called from
+  `App.tsx`; on native+staff it does biometric → FCM register → back-button
+  → share-intent → app-resume badge refresh. Non-staff users on native
+  hit the `pages/StaffOnly.tsx` screen.
+- **Server** — new `device_tokens` table (FCM tokens per staff/device),
+  `services/fcm.ts` (Legacy HTTP API sender, gated on
+  `FIREBASE_SERVER_KEY`), `routes/devices.ts` (mounted at
+  `/api/devices`, staff-only). `createNotification()` now fans every
+  notification to socket + web push + FCM.
+- **Required secret**: `FIREBASE_SERVER_KEY` (FCM Legacy server key).
+  Without it, FCM sends are silent no-ops; everything else still works.
+- **Docs**: `MOBILE.md` (architecture, dev/release/keystore/secret
+  rotation), `mobile/README.md` (workstation setup), `mobile/resources/`
+  (icon + splash source).
+
 ## Verification Status (last full audit)
 
 Server boots clean with formatted ✅/⚠️ env checklist for every required & optional var, prints all 84 registered routes on startup, and gates protected endpoints (401 without auth, 302 on OAuth, 200 on /health and public /api/policies).

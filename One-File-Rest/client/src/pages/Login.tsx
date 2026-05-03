@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import logoUrl from '@assets/logo_1777749351893.jpeg';
+import { isNative, openInAppBrowser } from '../lib/native';
 
 export default function Login() {
   const [loading, setLoading] = useState(false);
@@ -9,6 +10,14 @@ export default function Login() {
   const handleLogin = () => {
     if (loading) return;
     setLoading(true);
+    // On native, OAuth runs in the in-app Browser; the appUrlOpen listener
+    // in useNativeBridge closes the browser and reloads the WebView when
+    // the callback redirects to /auth/discord/callback.
+    if (isNative()) {
+      const origin = window.location.origin;
+      openInAppBrowser(`${origin}/auth/discord?native=1`);
+      return;
+    }
     window.location.href = '/auth/discord';
   };
 

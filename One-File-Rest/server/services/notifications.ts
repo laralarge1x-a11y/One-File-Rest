@@ -1,6 +1,7 @@
 import pool from '../db/client.js';
 import { getIO } from '../socket-store.js';
 import { sendPushToUser } from './push.js';
+import { sendFcmToUser } from './fcm.js';
 
 export interface CreateNotificationOptions {
   userDiscordId: string;
@@ -23,11 +24,23 @@ export async function createNotification(opts: CreateNotificationOptions) {
       const io = getIO();
       io.to(`user:${opts.userDiscordId}`).emit('notification:new', notification);
     } catch {}
-    // Web push (best effort)
+    // Web push (best effort) — used by the PWA / desktop browsers
     sendPushToUser(opts.userDiscordId, {
       title: opts.title,
       body: opts.message,
       url: opts.actionUrl || (opts.caseId ? `/cases/${opts.caseId}` : '/dashboard'),
+      tag: `notif-${notification.id}`,
+    }).catch(() => {});
+    // FCM (best effort) — used by the native admin Android APK. Deep-links
+    // to the admin case route since the APK only exposes the admin UI.
+    const fcmUrl = opts.actionUrl
+      || (opts.caseId ? `/admin/cases/${opts.caseId}` : '/admin');
+    sendFcmToUser(opts.userDiscordId, {
+      title: opts.title,
+      body: opts.message,
+      url: fcmUrl,
+      caseId: opts.caseId ?? null,
+      notificationId: notification.id,
       tag: `notif-${notification.id}`,
     }).catch(() => {});
     return notification;

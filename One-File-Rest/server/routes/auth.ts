@@ -18,6 +18,14 @@ router.get('/discord', (req: Request, res: Response, next: NextFunction) => {
   if (!process.env.DISCORD_CLIENT_ID) {
     return res.status(503).send('Discord OAuth is not configured. Please set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI in Secrets.');
   }
+  // Native APK login: caller appends ?native=1 (Login.tsx). Stash it on
+  // the session so the callback knows to bounce back via the custom
+  // scheme (handled by EliteTokFcmService/Browser deep-link), letting
+  // the in-app Browser plugin close itself and the WebView pick up the
+  // freshly minted session cookie.
+  if (req.query.native === '1') {
+    (req.session as any).nativeLogin = true;
+  }
   passport.authenticate('discord')(req, res, next);
 });
 
@@ -113,7 +121,18 @@ router.get('/callback', (req: Request, res: Response, next: NextFunction) => {
         const role = (req.user as any)?.role || 'client';
         const discordId = (req.user as any)?.discord_id;
         const isStaff = ['admin', 'owner', 'case_manager', 'support'].includes(role);
-        const redirectTo = isStaff ? '/admin' : '/dashboard';
+        const webPath = isStaff ? '/admin' : '/dashboard';
+        const isNativeLogin = !!(req.session as any)?.nativeLogin;
+        if (isNativeLogin) {
+          delete (req.session as any).nativeLogin;
+        }
+        // Native logins: bounce to the registered custom scheme so the
+        // in-app Browser plugin closes and Capacitor's appUrlOpen
+        // listener routes the WebView to the right page (the WebView's
+        // session cookie already carries the freshly-issued session).
+        const redirectTo = isNativeLogin
+          ? `club.elitetok.admin://auth/complete?next=${encodeURIComponent(webPath)}`
+          : webPath;
 
         // Audit log
         import('../services/webhook.js')

@@ -10,7 +10,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "db:migrate": "tsx server/db/migrate.ts",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "build:web": "cd client && vite build && rm -rf ../mobile/www && mkdir -p ../mobile/www && cp -r dist/* ../mobile/www/",
+    "android:install": "cd mobile && (test -d node_modules || npm install --no-audit --no-fund)",
+    "android:bootstrap": "pnpm run android:install && cd mobile && (test -d android || npx cap add android) && node scripts/apply-overlay.mjs && (test -f android/app/google-services.json || echo '⚠️  Drop google-services.json into mobile/android/app/ to enable FCM') && npx cap sync android",
+    "android:keystore": "cd mobile && node scripts/decode-keystore.mjs",
+    "build:android": "pnpm run build:web && pnpm run android:bootstrap && cd mobile/android && ./gradlew assembleDebug",
+    "build:android:release": "pnpm run build:web && pnpm run android:bootstrap && pnpm run android:keystore && cd mobile/android && ./gradlew assembleRelease bundleRelease",
+    "android:open": "pnpm run android:bootstrap && cd mobile && npx cap open android",
+    "android:run": "pnpm run android:bootstrap && cd mobile && npx cap run android"
   },
   "dependencies": {
     "axios": "^1.6.5",

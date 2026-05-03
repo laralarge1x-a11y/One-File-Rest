@@ -68,6 +68,7 @@ export function useAuth() {
     isLoading: loading,
     isAuthenticated: !!user,
     logout,
+    refetch: fetchUser,
   };
 }
 

@@ -1,5 +1,28 @@
 import pool from '../db/client.js';
 import { Server as SocketServer } from 'socket.io';
+import { createNotification } from './notifications.js';
+
+// Push a deadline notification (and FCM fan-out) to the assigned staffer
+// when the deadline-monitor cron fires for the 24h/6h windows. The 72h
+// alert remains socket-only — it's informational, not actionable.
+async function notifyAssignedStaffer(caseRow: any, alertType: '24h' | '6h') {
+  if (!caseRow.staff_assigned_id) return;
+  const message = alertType === '24h'
+    ? `Less than 24 hours until appeal deadline.`
+    : `Less than 6 hours until appeal deadline. Critical.`;
+  try {
+    await createNotification({
+      userDiscordId: caseRow.staff_assigned_id,
+      type: 'deadline_alert',
+      title: `Deadline · case #${caseRow.id}`,
+      message,
+      caseId: caseRow.id,
+      actionUrl: `/admin/cases/${caseRow.id}`,
+    });
+  } catch (err) {
+    console.error('[deadline-monitor] notify failed', err);
+  }
+}
 
 export function startDeadlineMonitor(io: SocketServer) {
   setInterval(async () => {
@@ -63,6 +86,7 @@ export function startDeadlineMonitor(io: SocketServer) {
               hours_remaining: hoursRemaining,
               alert_type: '24h',
             });
+            notifyAssignedStaffer(caseData, '24h');
           }
         }
 
@@ -85,6 +109,7 @@ export function startDeadlineMonitor(io: SocketServer) {
               hours_remaining: hoursRemaining,
               alert_type: '6h',
             });
+            notifyAssignedStaffer(caseData, '6h');
           }
         }
       }

@@ -35,6 +35,7 @@ import checklistRoutes from './routes/checklist.js';
 import exportsRoutes from './routes/exports.js';
 import staffPublicRoutes from './routes/staff-public.js';
 import adminQueueRoutes from './routes/admin-queue.js';
+import devicesRoutes from './routes/devices.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
@@ -54,6 +55,7 @@ const OPTIONAL_ENV: Array<{ key: string; reason: string }> = [
   { key: 'BOT_BRIDGE_TOKEN', reason: 'bot bridge will reject all bot requests' },
   { key: 'DISCORD_BOT_TOKEN', reason: 'Discord bot cannot start' },
   { key: 'DISCORD_GUILD_ID', reason: 'slash commands cannot register' },
+  { key: 'FIREBASE_SERVER_KEY', reason: 'native Android admin app cannot receive push notifications' },
 ];
 
 console.log('\n┌─────────────────────────────────────────────────────────────┐');
@@ -186,6 +188,7 @@ mount('/api/kb', requireAuth, kbRoutes);
 mount('/api/checklist', requireAuth, checklistRoutes);
 mount('/api/exports', requireAuth, exportsRoutes);
 mount('/api/staff-public', requireAuth, staffPublicRoutes);
+mount('/api/devices', requireStaff, devicesRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {

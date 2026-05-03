@@ -577,6 +577,21 @@ router.post('/assign', async (req: Request, res: Response) => {
       [case_id, staff_discord_id]
     );
     logAudit({ actorDiscordId: req.user!.discord_id, action: 'case_assigned', targetType: 'case', targetId: case_id, details: { staff_discord_id } }).catch(console.error);
+    // Push notification to the staffer who was just assigned the case so the
+    // APK badge & FCM tap routes them straight to the case workspace.
+    if (staff_discord_id && staff_discord_id !== req.user!.discord_id) {
+      try {
+        const { createNotification } = await import('../services/notifications.js');
+        await createNotification({
+          userDiscordId: staff_discord_id,
+          type: 'case_assigned',
+          title: `Case #${case_id} assigned to you`,
+          message: 'A new case has been assigned to you.',
+          caseId: case_id,
+          actionUrl: `/admin/cases/${case_id}`,
+        });
+      } catch (err) { console.error('[admin/assign] notify failed', err); }
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('[admin/assign]', err);

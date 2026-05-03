@@ -44,7 +44,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     // Verify access
     const caseResult = await pool.query(
-      'SELECT user_discord_id, account_username FROM cases WHERE id = $1', [case_id]
+      'SELECT user_discord_id, account_username, staff_assigned_id FROM cases WHERE id = $1', [case_id]
     );
     if (caseResult.rows.length === 0) return res.status(404).json({ error: 'Case not found' });
     const caseOwner = caseResult.rows[0];
@@ -87,8 +87,25 @@ router.post('/', async (req: Request, res: Response) => {
         actionUrl: `/cases/${case_id}`,
       });
     } else {
-      // Client message → just log; staff receives it via portal
+      // Client message → notify the assigned staff member (so the native
+      // admin APK gets an FCM push) AND log audit. Falls back to silently
+      // doing nothing on the notification side if no staffer is assigned —
+      // the dispatcher "Hot" queue picks those up via socket already.
       logAudit({ actorDiscordId: discordId, action: 'message_sent', targetType: 'case', targetId: case_id }).catch(console.error);
+      const assigned = caseOwner.staff_assigned_id;
+      if (assigned) {
+        const preview = content.length > 140 ? content.substring(0, 137) + '...' : content;
+        createNotification({
+          userDiscordId: assigned,
+          type: 'client_message',
+          title: `New client message · case #${case_id}`,
+          message: preview,
+          caseId: case_id,
+          actionUrl: `/admin/cases/${case_id}`,
+        });
+      }
+      // Mirror to the admin socket room so live dispatcher views update.
+      try { getIO().to('admin').emit('message:new', message); } catch {}
     }
 
     res.status(201).json(message);

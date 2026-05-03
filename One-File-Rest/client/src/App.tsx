@@ -3,6 +3,10 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { AnimatePresence } from 'framer-motion';
 import { useAuth } from './hooks/useAuth';
 import { useSocket } from './hooks/useSocket';
+import { useNativeBridge } from './hooks/useNativeBridge';
+import { isNative, SharedIntent, attachAppUrlOpen, closeInAppBrowser, biometricUnlock, prefGet, prefSet } from './lib/native';
+import StaffOnly from './pages/StaffOnly';
+import SharedFileSheet from './components/admin/SharedFileSheet';
 
 // Layout
 import AdminSidebar from './components/layout/AdminSidebar';
@@ -81,6 +85,8 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
   const wrap = (el: React.ReactNode) => isAdminRoute ? el : <PageTransition>{el}</PageTransition>;
+  const [sharedIntent, setSharedIntent] = React.useState<SharedIntent | null>(null);
+  useNativeBridge({ isStaff, onSharedItem: setSharedIntent });
 
   return (
     <AnimatePresence mode="wait">
@@ -117,13 +123,87 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
         <Route path="/" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />
         <Route path="*" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />
       </Routes>
+      <SharedFileSheet intent={sharedIntent} onClose={() => setSharedIntent(null)} />
     </AnimatePresence>
   );
 };
 
+// Mounted at the app root, BEFORE the auth check, so the OAuth callback
+// (returned via the club.elitetok.admin:// custom scheme) is never lost
+// during the unauthenticated→authenticated transition. Notification taps
+// that arrive while the app was killed are also caught via getLaunchUrl
+// inside attachAppUrlOpen.
+function useAppLevelDeepLinks(refetchAuth: () => void) {
+  React.useEffect(() => {
+    if (!isNative()) return;
+    let cleanup: (() => void) | null = null;
+    (async () => {
+      cleanup = await attachAppUrlOpen((raw) => {
+        // OAuth callback returns to club.elitetok.admin://auth/complete?next=...
+        if (/^club\.elitetok\.admin:\/\/auth\//.test(raw)) {
+          closeInAppBrowser();
+          refetchAuth();
+          // Pull `next` out and route the WebView there once we're authed.
+          try {
+            const u = new URL(raw);
+            const next = u.searchParams.get('next') || '/admin';
+            // Soft navigate after auth re-fetches succeed.
+            setTimeout(() => { window.location.replace(next); }, 200);
+          } catch {
+            window.location.replace('/admin');
+          }
+          return;
+        }
+        // Other deep links (notification taps, etc.) are routed by
+        // useNativeBridge once it mounts. Buffer through window for it
+        // to pick up if it hasn't mounted yet.
+        (window as any).__pendingDeepLink = raw;
+      });
+    })();
+    return () => { cleanup?.(); };
+  }, [refetchAuth]);
+}
+
+// Blocks rendering of the admin tree until biometric verification succeeds.
+// While locked, only a neutral lock screen is mounted — no fetches, no
+// case data, no notifications UI.
+function BiometricGate({ children }: { children: React.ReactNode }) {
+  const [unlocked, setUnlocked] = React.useState(false);
+  const [denied, setDenied] = React.useState(false);
+  const TTL_MS = 30 * 60 * 1000;
+  const KEY = 'biometric:lastUnlock';
+
+  const tryUnlock = React.useCallback(async () => {
+    setDenied(false);
+    const last = await prefGet(KEY);
+    const ts = last ? parseInt(last, 10) : 0;
+    if (ts && Date.now() - ts < TTL_MS) { setUnlocked(true); return; }
+    const ok = await biometricUnlock('Unlock Elite Tok Admin');
+    if (ok) { await prefSet(KEY, String(Date.now())); setUnlocked(true); }
+    else setDenied(true);
+  }, []);
+
+  React.useEffect(() => { tryUnlock(); }, [tryUnlock]);
+
+  if (unlocked) return <>{children}</>;
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, background: 'var(--bg-primary)', padding: 24 }}>
+      <div style={{ fontSize: 48 }}>🔒</div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>Locked</div>
+      <div style={{ fontSize: 14, color: 'var(--text-secondary)', textAlign: 'center', maxWidth: 320 }}>
+        {denied ? 'Authentication failed. Tap to try again.' : 'Confirm your identity to continue.'}
+      </div>
+      <button onClick={tryUnlock} style={{ padding: '10px 20px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', fontWeight: 600 }}>
+        Unlock
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, refetch } = useAuth();
   useSocket();
+  useAppLevelDeepLinks(refetch || (() => {}));
 
   if (isLoading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
@@ -145,6 +225,28 @@ export default function App() {
   }
 
   const isStaff = STAFF_ROLES.includes(user.role);
+
+  // Inside the native APK we only ship the admin portal — block clients with
+  // a friendly "use the website" screen instead of dropping them into a UI
+  // that has no client routes.
+  if (isNative() && !isStaff) {
+    return <ToastProvider><StaffOnly /></ToastProvider>;
+  }
+
+  // BLOCKING biometric gate — must complete BEFORE the admin tree mounts so
+  // no protected case data can flash on screen. 30-min Preferences TTL keeps
+  // it from prompting on every focus.
+  if (isNative() && isStaff) {
+    return (
+      <ToastProvider>
+        <BiometricGate>
+          <Router>
+            <AnimatedRoutes isStaff={isStaff} />
+          </Router>
+        </BiometricGate>
+      </ToastProvider>
+    );
+  }
 
   return (
     <ToastProvider>

@@ -416,3 +416,21 @@ ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS pause_reason TEXT;
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN DEFAULT false;
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Task #3: Admin Android APK — FCM device tokens
+-- ═══════════════════════════════════════════════════════════════════════════
+-- One row per (staff user, physical device). Used by the FCM sender to push
+-- to native admin apps (in addition to existing web push subscriptions).
+CREATE TABLE IF NOT EXISTS device_tokens (
+  id SERIAL PRIMARY KEY,
+  user_discord_id VARCHAR(20) REFERENCES users(discord_id) ON DELETE CASCADE,
+  token TEXT UNIQUE NOT NULL,
+  platform VARCHAR(20) NOT NULL DEFAULT 'android' CHECK (platform IN ('android', 'ios', 'web')),
+  device_label TEXT,
+  app_version TEXT,
+  last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_discord_id);
+

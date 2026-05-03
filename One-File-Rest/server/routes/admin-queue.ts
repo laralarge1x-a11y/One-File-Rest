@@ -110,6 +110,21 @@ router.post('/cases/bulk', async (req: Request, res: Response) => {
     if (action === 'assign') {
       const r = await pool.query(`UPDATE cases SET staff_assigned_id = $1, updated_at = NOW() WHERE id = ANY($2::int[]) RETURNING id`, [value || null, intIds]);
       updated = r.rowCount || 0;
+      if (value && value !== req.user!.discord_id) {
+        try {
+          const { createNotification } = await import('../services/notifications.js');
+          for (const row of r.rows) {
+            await createNotification({
+              userDiscordId: value,
+              type: 'case_assigned',
+              title: `Case #${row.id} assigned to you`,
+              message: 'A new case has been assigned to you.',
+              caseId: row.id,
+              actionUrl: `/admin/cases/${row.id}`,
+            });
+          }
+        } catch (err) { console.error('[admin-queue/bulk assign] notify failed', err); }
+      }
     } else if (action === 'status') {
       const r = await pool.query(`UPDATE cases SET status = $1, updated_at = NOW() WHERE id = ANY($2::int[]) RETURNING id, status`, [value, intIds]);
       updated = r.rowCount || 0;

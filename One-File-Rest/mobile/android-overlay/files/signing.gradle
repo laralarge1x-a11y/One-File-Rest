@@ -1,0 +1,36 @@
+// Signing config for the Elite Tok Admin release APK + AAB.
+// Keystore + passwords come from environment variables so they never sit in
+// version control. Decode the base64 keystore at build time:
+//
+//   echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > mobile/android/release.keystore
+//
+// (the build:android:release script does this automatically when run via
+// the documented MOBILE.md workflow).
+//
+// Apply this file from app/build.gradle:  apply from: '../signing.gradle'
+
+android {
+    signingConfigs {
+        release {
+            def ksFile = file('../release.keystore')
+            if (ksFile.exists()) {
+                storeFile     ksFile
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: ''
+                keyAlias      System.getenv('ANDROID_KEY_ALIAS')        ?: 'elite-tok-admin'
+                keyPassword   System.getenv('ANDROID_KEY_PASSWORD')     ?: ''
+            } else {
+                println '⚠️  release.keystore not found — release builds will be unsigned.'
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (file('../release.keystore').exists()) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled     false
+            shrinkResources   false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
