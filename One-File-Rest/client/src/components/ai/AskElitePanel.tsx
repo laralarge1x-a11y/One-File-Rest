@@ -77,8 +77,16 @@ export default function AskElitePanel() {
       }
       if (e.key === 'Escape' && open) setOpen(false);
     };
+    const onOpen = () => {
+      setOpen(true);
+      setTimeout(() => inputRef.current?.focus(), 80);
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('ask-elite:open', onOpen as EventListener);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('ask-elite:open', onOpen as EventListener);
+    };
   }, [open]);
 
   // Auto-scroll on new content

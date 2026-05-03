@@ -44,12 +44,10 @@ export default function AdminSidebar() {
       <nav style={{ flex: 1, padding: '8px', overflowY: 'auto' }}>
         {navItems.map((item) => {
           if ((item as any).isAction) {
-            // Synthesise the Cmd/Ctrl+J keypress so the global handler in
-            // AskElitePanel handles open + focus consistently.
+            // Dispatch a dedicated open event so clicking the sidebar item
+            // always opens + focuses the panel (never closes an open one).
             const trigger = () => {
-              const isMac = /Mac/.test(navigator.platform);
-              const ev = new KeyboardEvent('keydown', { key: 'j', metaKey: isMac, ctrlKey: !isMac, bubbles: true });
-              window.dispatchEvent(ev);
+              window.dispatchEvent(new CustomEvent('ask-elite:open'));
             };
             return (
               <button
