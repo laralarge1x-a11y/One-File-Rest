@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "Elite Tok Admin",
+    "slug": "elitetok-admin",
+    "version": "1.0.0",
+    "scheme": "elitetokadmin",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#202225"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "club.elitetok.admin",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Attach photo evidence to cases.",
+        "NSPhotoLibraryUsageDescription": "Attach photo evidence to cases.",
+        "NSFaceIDUsageDescription": "Unlock the admin app with Face ID."
+      }
+    },
+    "android": {
+      "package": "club.elitetok.admin",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#5865f2"
+      },
+      "permissions": ["CAMERA", "READ_MEDIA_IMAGES", "USE_BIOMETRIC", "USE_FINGERPRINT"]
+    },
+    "web": { "bundler": "metro" },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-font",
+      ["expo-camera", { "cameraPermission": "Attach photos to cases." }],
+      ["expo-image-picker", { "photosPermission": "Attach photos to cases." }],
+      ["expo-local-authentication", { "faceIDPermission": "Unlock the admin app." }],
+      ["expo-notifications", { "color": "#5865f2" }]
+    ],
+    "extra": {
+      "router": { "origin": false },
+      "eas": { "projectId": "" },
+      "apiBaseUrl": "https://one-file-rest.replit.app"
+    }
+  }
+}

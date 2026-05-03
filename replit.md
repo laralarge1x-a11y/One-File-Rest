@@ -15,6 +15,11 @@ A full-stack platform for managing TikTok account violation appeals, enabling cr
 ## Project Structure
 
 ```
+admin-expo/           # NEW: native admin app (Expo SDK 54 + Expo Router,
+│                     # Discord-style dark UI, runs in Expo Go — see
+│                     # admin-expo/README.md for the 60-second QR flow).
+│                     # Talks to the existing /api/* backend; coexists with
+│                     # the Capacitor APK shell in One-File-Rest/mobile/.
 One-File-Rest/
 ├── bot-bridge/        # Discord bot bridge (port 3001)
 ├── client/            # React frontend (port 5000)
