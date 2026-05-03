@@ -463,10 +463,6 @@ client.once(Events.ClientReady, async (readyClient) => {
   await refreshChannelMap();
   // Refresh channel map every 5 minutes
   setInterval(refreshChannelMap, 5 * 60 * 1000);
-  // Run a one-time backfill of recent Discord history into discord_messages
-  // so Ask Elite can answer "what did this client say last week?" right after
-  // deploy. Bounded by AI_BACKFILL_DAYS and AI_BACKFILL_LIMIT_PER_CHANNEL
-  // (defaults: 7 days, 200 msgs/channel) to keep the API quota cheap.
   backfillDiscordHistory().catch((e) => console.error('[Bot] Backfill failed:', e?.message));
 });
 
@@ -489,7 +485,7 @@ async function backfillDiscordHistory() {
       if (!channel || !('messages' in channel)) continue;
       const fetched = await (channel as TextChannel).messages.fetch({ limit: Math.min(perChannel, 100) }).catch(() => null);
       if (!fetched) continue;
-      const batch: any[] = [];
+      const batch: Array<Record<string, unknown>> = [];
       for (const msg of fetched.values()) {
         if (msg.createdTimestamp < cutoff) continue;
         batch.push({
@@ -632,26 +628,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleCustomerButton(interaction);
       return;
     }
-    if (interaction.isButton() && interaction.customId.startsWith('ai:post:')) {
-      const ownerId = interaction.customId.split(':')[2];
-      if (interaction.user.id !== ownerId) {
-        await interaction.reply({ content: '🔒 Only the asker can post their own answer publicly.', ephemeral: true });
-        return;
-      }
-      // Find the most recent stash for this user (the customId doesn't carry
-      // the original interaction id since Discord limits length).
-      const key = [...pendingPublicPosts.keys()].reverse().find((k) => k.startsWith(ownerId + ':'));
-      const stash = key ? pendingPublicPosts.get(key) : null;
-      if (!stash) {
-        await interaction.reply({ content: '⚠️ Public-post window expired (answers cache for 10 min).', ephemeral: true });
-        return;
-      }
-      pendingPublicPosts.delete(key!);
-      await interaction.reply({ content: `**Ask Elite** · posted by <@${ownerId}>\n\n${chunkMessage(stash.answer)[0]}` });
-      const srcEmbed = buildSourcesEmbed(stash.sources);
-      if (srcEmbed && interaction.channel && 'send' in interaction.channel) await (interaction.channel as any).send({ embeds: [srcEmbed] });
-      return;
-    }
   } catch (err) {
     console.error('[Bot] Unhandled interaction error:', err);
     if (interaction.isRepliable()) {
@@ -664,19 +640,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 });
-
-// ─── Ask Elite handlers (slash + @mention) ────────────────────────────────
-// Short-lived store: { ownerId:interactionId -> { answer, sources } }
-// for the "Post publicly" button. Auto-evicts after 10 min.
-const pendingPublicPosts = new Map<string, { answer: string; sources: any[] }>();
-setInterval(() => {
-  // Cap at 100 entries; rough TTL via FIFO drop.
-  while (pendingPublicPosts.size > 100) {
-    const k = pendingPublicPosts.keys().next().value;
-    if (k === undefined) break;
-    pendingPublicPosts.delete(k);
-  }
-}, 10 * 60 * 1000);
 
 function chunkMessage(s: string, max = 1900): string[] {
   if (s.length <= max) return [s];
@@ -729,29 +692,12 @@ async function handleAsk(interaction: ChatInputCommandInteraction) {
   try {
     const result = await runAsk(question, interaction.user.id);
     const chunks = chunkMessage(result.answer);
-    // For ephemeral replies in staff-only-by-policy channels, surface a
-    // "Post publicly" button so the asker can opt-in to share.
-    const publicBtn = ephemeral && isStaffOnlyChannel(interaction.channelId)
-      ? null  // already in a staff channel; no need
-      : (ephemeral
-          ? new ActionRowBuilder<ButtonBuilder>().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`ai:post:${interaction.user.id}`)
-                .setLabel('Post publicly')
-                .setStyle(ButtonStyle.Secondary)
-                .setEmoji('📢')
-            )
-          : null);
-    const firstReply: any = { content: chunks[0] };
-    if (publicBtn) firstReply.components = [publicBtn];
-    await interaction.editReply(firstReply);
+    await interaction.editReply({ content: chunks[0] });
     for (let i = 1; i < chunks.length; i++) {
       await interaction.followUp({ content: chunks[i], ephemeral });
     }
     const srcEmbed = buildSourcesEmbed(result.sources || []);
     if (srcEmbed) await interaction.followUp({ embeds: [srcEmbed], ephemeral });
-    // Stash the answer briefly so the Post Publicly button can re-emit it.
-    if (publicBtn) pendingPublicPosts.set(`${interaction.user.id}:${interaction.id}`, { answer: result.answer, sources: result.sources || [] });
   } catch (err: any) {
     const msg = err?.message || 'failed';
     const friendly = /not_staff/i.test(msg)

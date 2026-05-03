@@ -105,12 +105,13 @@ router.get('/threads/:id', async (req: Request, res: Response) => {
   }
 });
 
-// ─── PATCH /threads/:id  (rename / pin / share) ──────────────────────────
 router.patch('/threads/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     const { title, pinned, shared_with } = req.body || {};
-    const sets: string[] = []; const params: any[] = []; let i = 1;
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
     if (typeof title === 'string') { sets.push(`title = $${i++}`); params.push(title.slice(0, 200)); }
     if (typeof pinned === 'boolean') { sets.push(`pinned = $${i++}`); params.push(pinned); }
     if (Array.isArray(shared_with)) { sets.push(`shared_with = $${i++}`); params.push(shared_with.slice(0, 25).map(String)); }
@@ -128,7 +129,6 @@ router.patch('/threads/:id', async (req: Request, res: Response) => {
   }
 });
 
-// ─── DELETE /threads/:id ──────────────────────────────────────────────────
 router.delete('/threads/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);

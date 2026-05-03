@@ -229,27 +229,34 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       finalAnswer = 'I gathered the data but ran out of reasoning steps before composing a final answer. Please refine the question or break it into smaller parts.';
     }
 
-    // ── Citation enforcement ──
-    // If the model produced a factual answer with zero sources (no tool calls
-    // ever fired), force one retry that explicitly tells it to ground via
-    // tools or refuse. This catches "hallucinated" answers that bypass our
-    // retrieval layer. Trivial / chitchat replies (under ~120 chars) skip
-    // this guard.
     const looksFactual = finalAnswer.length > 120 && !/^(hi|hello|hey|sure|okay|ok|got it|thanks)/i.test(finalAnswer.trim());
-    if (allSources.length === 0 && toolsUsed.length === 0 && looksFactual) {
+
+    const validateGrounding = (text: string, srcCount: number): { ok: true } | { ok: false; reason: string } => {
+      if (!looksFactual) return { ok: true };
+      if (srcCount === 0) return { ok: false, reason: 'no tool calls were made — no portal data backs this answer' };
+      const cites = Array.from(text.matchAll(/\[#(\d+)\]/g)).map((m) => parseInt(m[1], 10));
+      if (cites.length === 0) return { ok: false, reason: 'no inline [#N] citation markers found' };
+      const bad = cites.filter((n) => n < 1 || n > srcCount);
+      if (bad.length > 0) return { ok: false, reason: `citation ${bad[0]} is out of range (1..${srcCount})` };
+      return { ok: true };
+    };
+
+    const runRetry = async (reason: string): Promise<void> => {
       messages.push({ role: 'assistant', content: finalAnswer });
       messages.push({
         role: 'user',
-        content: 'STOP. That answer cited zero portal data. You MUST call at least one tool (searchCases, getClientDossier, searchDiscord, etc.) before making factual claims about this organisation. Re-answer using tools, or — if no tool can answer it — say "I don\'t have data on that" and suggest where the staffer could look manually.',
+        content: `STOP. Your answer was rejected: ${reason}. Re-answer following the rules: (1) call tools to gather any factual claim, (2) cite each fact inline using [#1], [#2] etc. matching the source order, (3) if no tool can answer, say "I don't have data on that" and stop. Do not invent citations.`,
       });
       const retry = await groqTool({ messages, tools, temperature: 0.2, maxTokens: 1500 });
       totalIn += retry.tokens_in;
       totalOut += retry.tokens_out;
       if (retry.tool_calls.length > 0) {
         messages.push({
-          role: 'assistant', content: retry.content || null,
+          role: 'assistant',
+          content: retry.content || null,
           tool_calls: retry.tool_calls.map((c) => ({
-            id: c.id, type: 'function',
+            id: c.id,
+            type: 'function',
             function: { name: c.name, arguments: JSON.stringify(c.args) },
           })),
         });
@@ -270,14 +277,20 @@ export async function orchestrate(input: OrchestrateInput, emit: EmitFn): Promis
       } else {
         finalAnswer = retry.content || finalAnswer;
       }
+    };
+
+    let sources = dedupeSources(allSources);
+    let check = validateGrounding(finalAnswer, sources.length);
+    if (!check.ok) {
+      await runRetry(check.reason);
+      sources = dedupeSources(allSources);
+      check = validateGrounding(finalAnswer, sources.length);
+    }
+    if (!check.ok && looksFactual) {
+      finalAnswer = `I cannot answer that with confidence — ${check.reason}. Please rephrase the question, or check the portal directly for the relevant case/client.`;
+      sources = dedupeSources(allSources);
     }
 
-    const sources = dedupeSources(allSources);
-    // Final guard: if there are still no sources and the model is asserting
-    // facts, prepend a clear "ungrounded" warning so the staffer knows.
-    if (sources.length === 0 && looksFactual) {
-      finalAnswer = '⚠️ _No portal sources back this answer — treat as opinion only._\n\n' + finalAnswer;
-    }
     emit({ type: 'sources', sources });
     emit({ type: 'token', text: finalAnswer });
 

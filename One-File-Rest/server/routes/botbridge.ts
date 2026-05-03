@@ -299,8 +299,6 @@ router.post('/discord-messages/ingest', async (req: Request, res: Response) => {
   }
 });
 
-// Bulk variant for the bot-startup backfill. Accepts up to 500 messages in
-// one round-trip; uses the same upsert semantics so it's idempotent.
 router.post('/discord-messages/bulk-ingest', async (req: Request, res: Response) => {
   try {
     const { messages } = req.body || {};
@@ -326,7 +324,9 @@ router.post('/discord-messages/bulk-ingest', async (req: Request, res: Response)
           ]
         );
         inserted++;
-      } catch { /* swallow per-row errors so one bad row doesn't fail the batch */ }
+      } catch (rowErr) {
+        console.warn('[discord-messages/bulk-ingest] row failed:', (rowErr as Error)?.message);
+      }
     }
     res.json({ ok: true, accepted: batch.length, inserted });
   } catch (err: any) {

@@ -474,7 +474,7 @@ CREATE TABLE IF NOT EXISTS ai_threads (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ALTER TABLE ai_threads ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT false;
-ALTER TABLE ai_threads ADD COLUMN IF NOT EXISTS shared_with TEXT[] DEFAULT '{}';
+ALTER TABLE ai_threads ADD COLUMN IF NOT EXISTS shared_with TEXT[] DEFAULT '{}'::text[];
 CREATE INDEX IF NOT EXISTS idx_ai_threads_owner ON ai_threads(owner_discord_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS ai_messages (

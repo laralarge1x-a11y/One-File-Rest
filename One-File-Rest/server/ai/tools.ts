@@ -557,9 +557,6 @@ const getCaseMessages: ToolDef = {
   },
 };
 
-// ─── getClientDossier ─────────────────────────────────────────────────────
-// Cross-source person dossier — combines profile, all cases, recent portal
-// messages, recent Discord activity, subscription history, audit footprint.
 const getClientDossier: ToolDef = {
   name: 'getClientDossier',
   description: 'Build a complete cross-source dossier for a person: profile, ALL their cases, recent portal messages, recent Discord activity in their assigned channel, subscriptions, and audit footprint. Use this for "tell me everything about <client>" or "what is going on with <name>" questions.',
@@ -645,44 +642,6 @@ const compareCases: ToolDef = {
   },
 };
 
-// ─── runAiTool (proxy to existing /api/ai/*) ──────────────────────────────
-// Lets the orchestrator reuse the per-feature AI endpoints (case-summary,
-// generate-appeal, policy-explainer, etc.) instead of re-implementing them.
-// Strictly read-only — only whitelisted tool names that don't mutate.
-const SAFE_AI_TOOLS = new Set([
-  'analyze-violation', 'case-summary', 'policy-explainer',
-]);
-const runAiTool: ToolDef = {
-  name: 'runAiTool',
-  description: 'Call one of the existing portal AI utility endpoints for a deeper specialist read (whitelisted: analyze-violation, case-summary, policy-explainer). Returns the model output verbatim. Read-only — never use generate-appeal or anything that mutates.',
-  parameters: {
-    type: 'object',
-    required: ['tool', 'input'],
-    properties: {
-      tool: { type: 'string', description: 'analyze-violation | case-summary | policy-explainer' },
-      input: { type: 'object', description: 'Body to pass through (free-form per tool).' },
-    },
-  },
-  handler: async (a) => {
-    const name = String(a.tool || '');
-    if (!SAFE_AI_TOOLS.has(name)) return { ok: false, error: `runAiTool: '${name}' is not in the read-only whitelist` };
-    try {
-      const { default: fetch } = await import('node-fetch') as any;
-      const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/ai/${name}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Internal-Bridge': process.env.BOT_BRIDGE_TOKEN || '' },
-        body: JSON.stringify(a.input || {}),
-      });
-      const data: any = await r.json().catch(() => ({}));
-      if (!r.ok) return { ok: false, error: data?.error || `runAiTool ${name} failed (${r.status})` };
-      return { ok: true, data: { tool: name, result: data }, sources: [] };
-    } catch (err: any) {
-      return { ok: false, error: err?.message || 'runAiTool failed' };
-    }
-  },
-};
-
-// ─── Registry ─────────────────────────────────────────────────────────────
 export const TOOLS: ToolDef[] = [
   searchCases, getCase, getCaseMessages,
   searchPortalMessages,
@@ -692,12 +651,7 @@ export const TOOLS: ToolDef[] = [
   searchAuditLog, getDeadlines, searchPolicyAlerts,
   listStaff, analyzeImage,
   compareCases,
-  // runAiTool intentionally omitted from the registry: the /api/ai/* utility
-  // endpoints use session auth, so a server-to-server proxy would require an
-  // additional internal auth path that isn't worth the surface area for a
-  // nice-to-have. The orchestrator's other 18 tools cover all current needs.
 ];
-void runAiTool;
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 
