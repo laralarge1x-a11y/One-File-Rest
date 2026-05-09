@@ -32,7 +32,7 @@ jobs:
         run: cd One-File-Rest && npm run build:web
 
       - name: Install mobile deps
-        run: cd One-File-Rest && npm run android:install
+        run: cd One-File-Rest/mobile && npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Bootstrap Capacitor
         run: cd One-File-Rest && npm run android:bootstrap
