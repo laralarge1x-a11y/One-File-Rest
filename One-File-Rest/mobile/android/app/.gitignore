@@ -1,0 +1,9 @@
+# Native build outputs
+*.apk
+*.aab
+
+# Keystore (NEVER commit a release keystore)
+*.keystore
+*.jks
+
+node_modules/

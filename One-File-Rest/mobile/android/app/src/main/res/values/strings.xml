@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Elite Tok Admin</string>
+    <string name="title_activity_main">Elite Tok Admin</string>
+    <string name="package_name">club.elitetok.admin</string>
+    <string name="custom_url_scheme">club.elitetok.admin</string>
+</resources>
