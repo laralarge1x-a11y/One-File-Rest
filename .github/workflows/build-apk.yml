@@ -15,11 +15,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # ── Checkout ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Node + pnpm ───────────────────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -30,7 +28,6 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm@latest
 
-      # ── Java ──────────────────────────────────────────────────
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -38,7 +35,6 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
-      # ── Android SDK ───────────────────────────────────────────
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
@@ -48,43 +44,23 @@ jobs:
           sdkmanager "platforms;android-34"
           sdkmanager "build-tools;34.0.0"
 
-      # ── Install root deps ─────────────────────────────────────
       - name: Install root dependencies
         run: cd One-File-Rest && npm install --no-audit --no-fund
 
-      # ── Build React web client ────────────────────────────────
       - name: Build web client
         run: cd One-File-Rest && npm run build:web
         env:
           NODE_ENV: production
 
-      # ── Mobile deps ───────────────────────────────────────────
       - name: Install mobile dependencies
-        run: |
-          cd One-File-Rest/mobile
-          npm install --no-audit --no-fund --legacy-peer-deps
-
-      # ── Capacitor ─────────────────────────────────────────────
-      - name: Add Android platform
-        run: |
-          cd One-File-Rest/mobile
-          npx cap add android || echo "Android platform already exists"
-
-      - name: Apply Android overlay
-        run: |
-          cd One-File-Rest/mobile
-          node scripts/apply-overlay.mjs || echo "Overlay script skipped"
+        run: cd One-File-Rest/mobile && npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Sync Capacitor
-        run: |
-          cd One-File-Rest/mobile
-          npx cap sync android
+        run: cd One-File-Rest/mobile && npx cap sync android
 
-      # ── Gradle permissions ────────────────────────────────────
       - name: Make gradlew executable
         run: chmod +x One-File-Rest/mobile/android/gradlew
 
-      # ── Build APK ─────────────────────────────────────────────
       - name: Build debug APK
         run: |
           cd One-File-Rest/mobile/android
@@ -93,14 +69,12 @@ jobs:
             --stacktrace \
             -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
 
-      # ── Rename APK with timestamp ─────────────────────────────
       - name: Rename APK
         run: |
           mkdir -p output
           cp One-File-Rest/mobile/android/app/build/outputs/apk/debug/app-debug.apk \
              output/EliteTokClub-debug-$(date +%Y%m%d-%H%M).apk
 
-      # ── Upload artifact ───────────────────────────────────────
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -108,9 +82,7 @@ jobs:
           path: output/*.apk
           retention-days: 14
 
-      # ── Print APK info ────────────────────────────────────────
       - name: Show APK details
         run: |
           echo "✅ Build complete"
           ls -lh output/
-          echo "APK size: $(du -sh output/*.apk | cut -f1)"
