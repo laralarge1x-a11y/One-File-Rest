@@ -1,0 +1,51 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: cd One-File-Rest && npm install
+
+      - name: Build web client
+        run: cd One-File-Rest && npm run build:web
+
+      - name: Install mobile deps
+        run: cd One-File-Rest && npm run android:install
+
+      - name: Bootstrap Capacitor
+        run: cd One-File-Rest && npm run android:bootstrap
+
+      - name: Build debug APK
+        run: |
+          cd One-File-Rest/mobile/android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: elite-tok-debug
+          path: One-File-Rest/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
