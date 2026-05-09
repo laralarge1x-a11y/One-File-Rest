@@ -5,47 +5,112 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  NODE_VERSION: '20'
+  JAVA_VERSION: '17'
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 30
 
-      - name: Setup Node
+    steps:
+      # ── Checkout ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node + pnpm ───────────────────────────────────────────
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: One-File-Rest/package-lock.json
 
+      - name: Install pnpm
+        run: npm install -g pnpm@latest
+
+      # ── Java ──────────────────────────────────────────────────
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
 
+      # ── Android SDK ───────────────────────────────────────────
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install dependencies
-        run: cd One-File-Rest && npm install
+      - name: Install Android build tools
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-34"
+          sdkmanager "build-tools;34.0.0"
 
+      # ── Install root deps ─────────────────────────────────────
+      - name: Install root dependencies
+        run: cd One-File-Rest && npm install --no-audit --no-fund
+
+      # ── Build React web client ────────────────────────────────
       - name: Build web client
         run: cd One-File-Rest && npm run build:web
+        env:
+          NODE_ENV: production
 
-      - name: Install mobile deps
-        run: cd One-File-Rest/mobile && npm install --no-audit --no-fund --legacy-peer-deps
+      # ── Mobile deps ───────────────────────────────────────────
+      - name: Install mobile dependencies
+        run: |
+          cd One-File-Rest/mobile
+          npm install --no-audit --no-fund --legacy-peer-deps
 
-      - name: Bootstrap Capacitor
-        run: cd One-File-Rest && npm run android:bootstrap
+      # ── Capacitor ─────────────────────────────────────────────
+      - name: Add Android platform
+        run: |
+          cd One-File-Rest/mobile
+          npx cap add android || echo "Android platform already exists"
 
+      - name: Apply Android overlay
+        run: |
+          cd One-File-Rest/mobile
+          node scripts/apply-overlay.mjs || echo "Overlay script skipped"
+
+      - name: Sync Capacitor
+        run: |
+          cd One-File-Rest/mobile
+          npx cap sync android
+
+      # ── Gradle permissions ────────────────────────────────────
+      - name: Make gradlew executable
+        run: chmod +x One-File-Rest/mobile/android/gradlew
+
+      # ── Build APK ─────────────────────────────────────────────
       - name: Build debug APK
         run: |
           cd One-File-Rest/mobile/android
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
 
-      - name: Upload APK
+      # ── Rename APK with timestamp ─────────────────────────────
+      - name: Rename APK
+        run: |
+          mkdir -p output
+          cp One-File-Rest/mobile/android/app/build/outputs/apk/debug/app-debug.apk \
+             output/EliteTokClub-debug-$(date +%Y%m%d-%H%M).apk
+
+      # ── Upload artifact ───────────────────────────────────────
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: elite-tok-debug
-          path: One-File-Rest/mobile/android/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 7
+          name: EliteTokClub-APK
+          path: output/*.apk
+          retention-days: 14
+
+      # ── Print APK info ────────────────────────────────────────
+      - name: Show APK details
+        run: |
+          echo "✅ Build complete"
+          ls -lh output/
+          echo "APK size: $(du -sh output/*.apk | cut -f1)"
