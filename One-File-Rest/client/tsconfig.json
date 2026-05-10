@@ -14,7 +14,25 @@
     "jsx": "react-jsx",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "baseUrl": ".",
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(git *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(cd *)",
+      "Bash(mkdir *)",
+      "Bash(copy *)",
+      "Bash(move *)",
+      "Bash(rm *)",
+      "Bash(dir *)",
+      "Bash(type *)",
+      "Bash(echo *)"
+    ],
+    "tools": true
+  }
+}
     "paths": {
       "@/*": ["./src/*"],
       "@shared/*": ["../shared/*"]

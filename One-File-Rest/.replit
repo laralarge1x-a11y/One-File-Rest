@@ -1,5 +1,4 @@
 run = "npm run start"
-entrypoint = "server/index.ts"
 
 [nix]
 channel = "stable-23_11"
@@ -11,3 +10,4 @@ externalPort = 80
 [[ports]]
 localPort = 3001
 externalPort = 3001
+

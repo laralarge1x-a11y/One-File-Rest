@@ -431,9 +431,9 @@ io.on('connection', async (socket) => {
 // index.html in production instead of the canonical envelope.
 app.use(['/api', '/auth', '/bot'], notFoundHandler);
 
-// ─── Static frontend (production only) ────────────────────────────────────
+// ─── Static frontend ────────────────────────────────────────────────────
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
-if (process.env.NODE_ENV === 'production' && fs.existsSync(clientDist)) {
+if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist, { maxAge: '1h' }));
   app.use((_req, res) => { res.sendFile(path.join(clientDist, 'index.html')); });
 }

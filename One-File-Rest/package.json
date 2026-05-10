@@ -5,9 +5,10 @@
   "description": "TikTok Shop violation recovery portal with real-time Discord sync",
   "main": "server/index.ts",
   "scripts": {
-    "start": "concurrently \"tsx server/index.ts\" \"tsx bot-bridge/index.ts\"",
+        "start": "npm run build:client && concurrently \"tsx server/index.ts\" \"tsx bot-bridge/index.ts\"",
     "dev": "concurrently \"tsx watch server/index.ts\" \"vite\" \"tsx watch bot-bridge/index.ts\"",
     "build": "vite build",
+    "build:client": "cd client && npx vite build",
     "preview": "vite preview",
     "db:migrate": "tsx server/db/migrate.ts",
     "type-check": "tsc --noEmit",
