@@ -12,8 +12,9 @@ import { STAGES, statusToStage, getStageMeta } from '@shared/stages';
 import { useToast } from '../../components/customer/Toast';
 import {
   ArrowLeft, Clock, Send, Image as ImageIcon, FileText, Download,
-  ChevronRight, MessageSquare, AlertCircle, Activity, X,
+  ChevronRight, MessageSquare, AlertCircle, Activity, X, Upload as UploadIcon,
 } from 'lucide-react';
+import EvidenceUploader from '../../components/evidence/EvidenceUploader';
 
 interface Message {
   id: number;
@@ -75,6 +76,9 @@ export default function CaseDetail() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [uploadingEvidence, setUploadingEvidence] = useState(false);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const typingTimeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -105,9 +109,27 @@ export default function CaseDetail() {
       };
       setMessages((p) => [...p, normalized]);
     };
+    // Typing indicator handler
+    const onTyping = (data: { user: string; isTyping: boolean }) => {
+      if (data.user === user?.discord_username) return;
+      if (data.isTyping) {
+        setTypingUsers((prev) => prev.includes(data.user) ? prev : [...prev, data.user]);
+        clearTimeout(typingTimeoutRef.current[data.user]);
+        typingTimeoutRef.current[data.user] = setTimeout(() => {
+          setTypingUsers((prev) => prev.filter((u) => u !== data.user));
+        }, 4000);
+      } else {
+        setTypingUsers((prev) => prev.filter((u) => u !== data.user));
+      }
+    };
     socket.on('message:new', onMsg);
-    return () => { socket.off('message:new', onMsg); };
-  }, [socket, id]);
+    socket.on('typing:indicator', onTyping);
+    return () => {
+      socket.off('message:new', onMsg);
+      socket.off('typing:indicator', onTyping);
+      Object.values(typingTimeoutRef.current).forEach(clearTimeout);
+    };
+  }, [socket, id, user?.discord_username]);
 
   useEffect(() => {
     if (tab === 'messages') messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -131,6 +153,24 @@ export default function CaseDetail() {
 
   const countdown = useCountdown(caseData?.appeal_deadline);
   const myDiscordId = user?.discord_id;
+
+  const handleEvidenceUpload = useCallback(async (files: File[]) => {
+    if (!id) return;
+    setUploadingEvidence(true);
+    try {
+      const formData = new FormData();
+      for (const f of files) formData.append('files', f);
+      formData.append('case_id', id);
+      const r = await fetch('/api/evidence/upload', {
+        method: 'POST', credentials: 'include',
+        body: formData,
+      });
+      if (!r.ok) throw new Error('Upload failed');
+      toast('Evidence uploaded successfully', 'success');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Upload failed', 'error');
+    } finally { setUploadingEvidence(false); }
+  }, [id, toast]);
 
   if (isLoading) return (
     <div className="page-wrap">
@@ -220,6 +260,15 @@ export default function CaseDetail() {
             </TabContent>
 
             <TabContent active={tab} value="evidence">
+              {/* Upload area */}
+              <div className="mb-4">
+                <EvidenceUploader onUpload={handleEvidenceUpload} />
+                {uploadingEvidence && (
+                  <div className="flex items-center gap-2 mt-2 text-xs text-[var(--text-muted)]">
+                    <span className="spin-dot" /> Uploading...
+                  </div>
+                )}
+              </div>
               {caseData.evidence?.length > 0 ? (
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(100px,1fr))] gap-2">
                   {caseData.evidence.map((e: any) => {
@@ -243,9 +292,9 @@ export default function CaseDetail() {
                   })}
                 </div>
               ) : (
-                <div className="text-center py-12 text-[var(--text-muted)]">
+                <div className="text-center py-8 text-[var(--text-muted)]">
                   <ImageIcon size={36} className="mx-auto mb-3" />
-                  <p>No evidence uploaded yet.</p>
+                  <p>No evidence uploaded yet. Drag & drop or click above to upload.</p>
                 </div>
               )}
             </TabContent>
@@ -285,6 +334,7 @@ export default function CaseDetail() {
                             <div className="whitespace-pre-wrap break-words">{m.content}</div>
                             <div className="mt-1 text-[10px] opacity-65 flex justify-end gap-1">
                               <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              {mine && <span style={{ color: m.is_read ? '#57F287' : 'var(--text-muted)' }}>{m.is_read ? '✓✓' : '✓'}</span>}
                             </div>
                           </div>
                         </div>
@@ -294,6 +344,17 @@ export default function CaseDetail() {
                   })()}
                   <div ref={messagesEndRef} />
                 </div>
+                {/* Typing indicator */}
+                {typingUsers.length > 0 && (
+                  <div className="flex items-center gap-2 pb-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                    <span className="flex gap-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '200ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '400ms' }} />
+                    </span>
+                    <span className="italic">{typingUsers.join(', ')} typing...</span>
+                  </div>
+                )}
                 <div className="border-t border-[var(--border)] pt-3 flex gap-2 items-end">
                   <textarea
                     ref={taRef}
@@ -303,6 +364,12 @@ export default function CaseDetail() {
                       if (taRef.current) {
                         taRef.current.style.height = 'auto';
                         taRef.current.style.height = Math.min(120, taRef.current.scrollHeight) + 'px';
+                      }
+                      // Emit typing
+                      if (socket && id) {
+                        socket.emit('typing:start', parseInt(id));
+                        clearTimeout((taRef as any).__typingTimer);
+                        (taRef as any).__typingTimer = setTimeout(() => socket.emit('typing:stop', parseInt(id)), 1500);
                       }
                     }}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}

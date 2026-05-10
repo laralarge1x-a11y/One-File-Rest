@@ -76,7 +76,7 @@ function truncate(s: string | undefined | null, max: number): string {
 // ─── Core fire function ────────────────────────────────────────────────────
 async function _fireWebhook(discordId: string, eventType: string, embed: WebhookEmbed): Promise<void> {
   const userResult = await pool.query(
-    'SELECT id, discord_webhook_url FROM users WHERE discord_id = $1',
+    'SELECT id, discord_webhook_url, webhook_channel_routing FROM users WHERE discord_id = $1',
     [discordId]
   );
 
@@ -84,33 +84,65 @@ async function _fireWebhook(discordId: string, eventType: string, embed: Webhook
     return;
   }
 
-  const { id: userId, discord_webhook_url: webhookUrl } = userResult.rows[0];
+  const { id: userId, discord_webhook_url: webhookUrl, webhook_channel_routing } = userResult.rows[0];
   const { buttons, ...embedFields } = embed;
+
+  // Channel routing based on event type
+  const routing: Record<string, string> = {};
+  try {
+    const parsed = typeof webhook_channel_routing === 'string'
+      ? JSON.parse(webhook_channel_routing || '{}')
+      : (webhook_channel_routing || {});
+    Object.assign(routing, parsed);
+  } catch { /* ignore malformed routing */ }
+
+  // Default webhook URL, but override if a channel is mapped for this event type
+  let targetUrl = webhookUrl;
+  if (routing[eventType]) {
+    targetUrl = routing[eventType];
+  } else if (routing.default) {
+    targetUrl = routing.default;
+  }
 
   let success = false;
   let errorMessage: string | null = null;
+  let lastResponse: Response | null = null;
 
-  try {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        embeds: [{
-          ...embedFields,
-          timestamp: embed.timestamp || new Date().toISOString(),
-        }],
-        components: buildButtonRow(buttons),
-      }),
-    });
+  // Retry loop: 3 attempts with exponential backoff
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      lastResponse = await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          embeds: [{
+            ...embedFields,
+            timestamp: embed.timestamp || new Date().toISOString(),
+          }],
+          components: buildButtonRow(buttons),
+        }),
+      });
 
-    if (!response.ok) {
-      const text = await response.text();
-      errorMessage = `HTTP ${response.status}: ${text.substring(0, 200)}`;
-    } else {
-      success = true;
+      if (lastResponse.ok) {
+        success = true;
+        break;
+      }
+
+      const text = await lastResponse.text();
+      errorMessage = `HTTP ${lastResponse.status}: ${text.substring(0, 200)}`;
+
+      // Don't retry on 400 bad request (payload issue)
+      if (lastResponse.status === 400 || lastResponse.status === 401 || lastResponse.status === 403) {
+        break;
+      }
+    } catch (fetchErr: any) {
+      errorMessage = fetchErr?.message || 'Network error';
     }
-  } catch (fetchErr: any) {
-    errorMessage = fetchErr?.message || 'Network error';
+
+    if (attempt < 3) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
 
   try {

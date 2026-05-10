@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import { useAuth } from './hooks/useAuth';
@@ -16,36 +16,36 @@ import CommandPalette from './components/admin/CommandPalette';
 import HelpButton from './components/admin/HelpButton';
 import { CustomerNav, BottomNav, ToastProvider, PageTransition, LoadingSpinner } from './components/customer';
 
-// Client Pages
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard/Dashboard';
-import Cases from './pages/Cases/Cases';
-import CaseDetail from './pages/CaseDetail/CaseDetail';
-import NewCase from './pages/NewCase/NewCase';
-import Messages from './pages/Messages/Messages';
-import PolicyAlerts from './pages/PolicyAlerts/PolicyAlerts';
-import ViolationTimeline from './pages/ViolationTimeline/ViolationTimeline';
-import Subscription from './pages/Subscription/Subscription';
-import KnowledgeBase from './pages/KnowledgeBase/KnowledgeBase';
-import KbArticle from './pages/KbArticle/KbArticle';
-import Specialists from './pages/Specialists/Specialists';
-import NotificationsCenter from './pages/NotificationsCenter/NotificationsCenter';
-import AccountSettings from './pages/AccountSettings/AccountSettings';
+// Client Pages — Lazy loaded for route splitting
+const Login = React.lazy(() => import('./pages/Login'));
+const Dashboard = React.lazy(() => import('./pages/Dashboard/Dashboard'));
+const Cases = React.lazy(() => import('./pages/Cases/Cases'));
+const CaseDetail = React.lazy(() => import('./pages/CaseDetail/CaseDetail'));
+const NewCase = React.lazy(() => import('./pages/NewCase/NewCase'));
+const Messages = React.lazy(() => import('./pages/Messages/Messages'));
+const PolicyAlerts = React.lazy(() => import('./pages/PolicyAlerts/PolicyAlerts'));
+const ViolationTimeline = React.lazy(() => import('./pages/ViolationTimeline/ViolationTimeline'));
+const Subscription = React.lazy(() => import('./pages/Subscription/Subscription'));
+const KnowledgeBase = React.lazy(() => import('./pages/KnowledgeBase/KnowledgeBase'));
+const KbArticle = React.lazy(() => import('./pages/KbArticle/KbArticle'));
+const Specialists = React.lazy(() => import('./pages/Specialists/Specialists'));
+const NotificationsCenter = React.lazy(() => import('./pages/NotificationsCenter/NotificationsCenter'));
+const AccountSettings = React.lazy(() => import('./pages/AccountSettings/AccountSettings'));
 
-// Admin Pages
-import AdminDashboard from './pages/admin/AdminDashboard';
-import KnowledgeBaseAdmin from './pages/admin/KnowledgeBaseAdmin';
-import ClientList from './pages/admin/ClientList';
-import ClientProfile from './pages/admin/ClientProfile';
-import CaseWorkspace from './pages/admin/CaseWorkspace';
-import TemplateBuilder from './pages/admin/TemplateBuilder';
-import BulkBroadcast from './pages/admin/BulkBroadcast';
-import Analytics from './pages/admin/Analytics';
-import StaffManagement from './pages/admin/StaffManagement';
-import PolicyManagement from './pages/admin/PolicyManagement';
-import AdminSettings from './pages/admin/AdminSettings';
-import AITools from './pages/admin/AITools';
-import StageBoard from './pages/admin/StageBoard';
+// Admin Pages — Lazy loaded
+const AdminDashboard = React.lazy(() => import('./pages/admin/AdminDashboard'));
+const KnowledgeBaseAdmin = React.lazy(() => import('./pages/admin/KnowledgeBaseAdmin'));
+const ClientList = React.lazy(() => import('./pages/admin/ClientList'));
+const ClientProfile = React.lazy(() => import('./pages/admin/ClientProfile'));
+const CaseWorkspace = React.lazy(() => import('./pages/admin/CaseWorkspace'));
+const TemplateBuilder = React.lazy(() => import('./pages/admin/TemplateBuilder'));
+const BulkBroadcast = React.lazy(() => import('./pages/admin/BulkBroadcast'));
+const Analytics = React.lazy(() => import('./pages/admin/Analytics'));
+const StaffManagement = React.lazy(() => import('./pages/admin/StaffManagement'));
+const PolicyManagement = React.lazy(() => import('./pages/admin/PolicyManagement'));
+const AdminSettings = React.lazy(() => import('./pages/admin/AdminSettings'));
+const AITools = React.lazy(() => import('./pages/admin/AITools'));
+const StageBoard = React.lazy(() => import('./pages/admin/StageBoard'));
 
 
 const STAFF_ROLES = ['support', 'case_manager', 'owner', 'admin'];
@@ -93,6 +93,18 @@ const ProtectedRoute: React.FC<{
   return <>{children}</>;
 };
 
+function SuspenseWrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense fallback={
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+        <LoadingSpinner label="Loading..." />
+      </div>
+    }>
+      {children}
+    </Suspense>
+  );
+}
+
 const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
@@ -103,36 +115,36 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
   return (
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
-        {/* ── Client Routes ── */}
-        <Route path="/dashboard"   element={<ProtectedRoute><ClientLayout>{wrap(<Dashboard />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/cases"       element={<ProtectedRoute><ClientLayout>{wrap(<Cases />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/cases/new"   element={<ProtectedRoute><ClientLayout>{wrap(<NewCase />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/cases/:id"   element={<ProtectedRoute><ClientLayout>{wrap(<CaseDetail />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/messages"    element={<ProtectedRoute><ClientLayout>{wrap(<Messages />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/policies"    element={<ProtectedRoute><ClientLayout>{wrap(<PolicyAlerts />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/timeline"    element={<ProtectedRoute><ClientLayout>{wrap(<ViolationTimeline />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/subscription" element={<ProtectedRoute><ClientLayout>{wrap(<Subscription />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/kb"           element={<ProtectedRoute><ClientLayout>{wrap(<KnowledgeBase />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/kb/:slug"     element={<ProtectedRoute><ClientLayout>{wrap(<KbArticle />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/specialists"  element={<ProtectedRoute><ClientLayout>{wrap(<Specialists />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/notifications" element={<ProtectedRoute><ClientLayout>{wrap(<NotificationsCenter />)}</ClientLayout></ProtectedRoute>} />
-        <Route path="/settings"     element={<ProtectedRoute><ClientLayout>{wrap(<AccountSettings />)}</ClientLayout></ProtectedRoute>} />
+                {/* ── Client Routes ── */}
+        <Route path="/dashboard"   element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<Dashboard />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/cases"       element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<Cases />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/cases/new"   element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<NewCase />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/cases/:id"   element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<CaseDetail />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/messages"    element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<Messages />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/policies"    element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<PolicyAlerts />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/timeline"    element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<ViolationTimeline />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/subscription" element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<Subscription />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/kb"           element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<KnowledgeBase />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/kb/:slug"     element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<KbArticle />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/specialists"  element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<Specialists />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/notifications" element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<NotificationsCenter />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
+        <Route path="/settings"     element={<ProtectedRoute><ClientLayout><SuspenseWrapper>{wrap(<AccountSettings />)}</SuspenseWrapper></ClientLayout></ProtectedRoute>} />
 
         {/* ── Admin Routes ── */}
-        <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/stage-board" element={<ProtectedRoute requiredRole="staff"><AdminLayout><StageBoard /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/cases"       element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseWorkspace /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/cases/:id"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><CaseWorkspace /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/clients"     element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientList /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/clients/:id" element={<ProtectedRoute requiredRole="staff"><AdminLayout><ClientProfile /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/analytics"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><Analytics /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/broadcast"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><BulkBroadcast /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/templates"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><TemplateBuilder /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/policies"    element={<ProtectedRoute requiredRole="staff"><AdminLayout><PolicyManagement /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/ai"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><AITools /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/kb"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><KnowledgeBaseAdmin /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/settings"    element={<ProtectedRoute requiredRole="owner"><AdminLayout><AdminSettings /></AdminLayout></ProtectedRoute>} />
-        <Route path="/admin/staff"       element={<ProtectedRoute requiredRole="owner"><AdminLayout><StaffManagement /></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><AdminDashboard /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/stage-board" element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><StageBoard /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/cases"       element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><CaseWorkspace /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/cases/:id"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><CaseWorkspace /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/clients"     element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><ClientList /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/clients/:id" element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><ClientProfile /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/analytics"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><Analytics /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/broadcast"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><BulkBroadcast /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/templates"   element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><TemplateBuilder /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/policies"    element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><PolicyManagement /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/ai"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><AITools /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/kb"          element={<ProtectedRoute requiredRole="staff"><AdminLayout><SuspenseWrapper><KnowledgeBaseAdmin /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/settings"    element={<ProtectedRoute requiredRole="owner"><AdminLayout><SuspenseWrapper><AdminSettings /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
+        <Route path="/admin/staff"       element={<ProtectedRoute requiredRole="owner"><AdminLayout><SuspenseWrapper><StaffManagement /></SuspenseWrapper></AdminLayout></ProtectedRoute>} />
 
         {/* ── Root redirect ── */}
         <Route path="/" element={<Navigate to={isStaff ? '/admin' : '/dashboard'} replace />} />

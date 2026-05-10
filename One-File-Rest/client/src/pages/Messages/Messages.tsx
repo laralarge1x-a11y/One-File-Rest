@@ -24,6 +24,8 @@ export default function Messages() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const typingTimeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
   const [search, setSearch] = useState('');
   const [showThread, setShowThread] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -55,9 +57,26 @@ export default function Messages() {
         created_at: raw.created_at ?? raw.timestamp ?? new Date().toISOString(),
       }]);
     };
+    const onTyping = (data: { user: string; isTyping: boolean }) => {
+      if (data.user === user?.discord_username) return;
+      if (data.isTyping) {
+        setTypingUsers((prev) => prev.includes(data.user) ? prev : [...prev, data.user]);
+        clearTimeout(typingTimeoutRef.current[data.user]);
+        typingTimeoutRef.current[data.user] = setTimeout(() => {
+          setTypingUsers((prev) => prev.filter((u) => u !== data.user));
+        }, 4000);
+      } else {
+        setTypingUsers((prev) => prev.filter((u) => u !== data.user));
+      }
+    };
     socket.on('message:new', handler);
-    return () => { socket.off('message:new', handler); };
-  }, [socket, activeId]);
+    socket.on('typing:indicator', onTyping);
+    return () => {
+      socket.off('message:new', handler);
+      socket.off('typing:indicator', onTyping);
+      Object.values(typingTimeoutRef.current).forEach(clearTimeout);
+    };
+  }, [socket, activeId, user?.discord_username]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length]);
 
@@ -191,8 +210,9 @@ export default function Messages() {
                           }}
                         >
                           <div className="whitespace-pre-wrap break-words">{m.content}</div>
-                          <div className="mt-1 text-[10px] opacity-65">
-                            {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          <div className="mt-1 text-[10px] opacity-65 flex items-center gap-1 justify-end">
+                            <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            {mine && <span style={{ color: (m as any).is_read ? '#57F287' : 'var(--text-muted)' }}>{(m as any).is_read ? '✓✓' : '✓'}</span>}
                           </div>
                         </div>
                       </div>
@@ -202,10 +222,27 @@ export default function Messages() {
                 </div>
                 {activeId && (
                   <div className="border-t border-[var(--border)] p-3 flex gap-2 items-end">
+                    {/* Typing indicator */}
+                    {typingUsers.length > 0 && (
+                      <div className="flex items-center gap-2 pb-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                        <span className="flex gap-0.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '200ms' }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '400ms' }} />
+                        </span>
+                        <span className="italic">{typingUsers.join(', ')} typing...</span>
+                      </div>
+                    )}
                     <textarea ref={taRef} value={text}
                       onChange={(e) => {
                         setText(e.target.value);
                         if (taRef.current) { taRef.current.style.height = 'auto'; taRef.current.style.height = Math.min(120, taRef.current.scrollHeight) + 'px'; }
+                        // Emit typing
+                        if (socket && activeId) {
+                          socket.emit('typing:start', activeId);
+                          clearTimeout((taRef as any).__typingTimer);
+                          (taRef as any).__typingTimer = setTimeout(() => socket.emit('typing:stop', activeId), 1500);
+                        }
                       }}
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                       placeholder="Type a message..." maxLength={2000}

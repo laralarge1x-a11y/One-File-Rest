@@ -56,6 +56,7 @@ import exportsRoutes from './routes/exports.js';
 import staffPublicRoutes from './routes/staff-public.js';
 import adminQueueRoutes from './routes/admin-queue.js';
 import devicesRoutes from './routes/devices.js';
+import webhookAdminRoutes from './routes/webhook-admin.js';
 
 // Services
 import { startDeadlineMonitor } from './services/deadline-monitor.js';
@@ -249,6 +250,7 @@ mount('/api/checklist', requireAuth, checklistRoutes);
 mount('/api/exports', requireAuth, exportsRoutes);
 mount('/api/staff-public', requireAuth, staffPublicRoutes);
 mount('/api/devices', requireStaff, devicesRoutes);
+mount('/api/admin', requireStaff, webhookAdminRoutes);
 
 // Deep readiness probe — exercises DB, bot bridge auth path, Groq key,
 // and Discord gateway. Used by deployment readiness checks.
