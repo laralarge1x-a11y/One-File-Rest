@@ -194,6 +194,12 @@ export default function NotificationBell() {
                 </button>
               ))}
             </div>
+            <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border, #2a2a2a)', textAlign: 'center' }}>
+              <button onClick={() => { setOpen(false); navigate('/notifications'); }} style={{
+                fontSize: 12, color: '#5865F2', fontWeight: 600,
+                background: 'transparent', border: 'none', cursor: 'pointer', width: '100%',
+              }}>View all notifications →</button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

@@ -166,6 +166,7 @@ export default function CustomerNav() {
                     {NAV_ITEMS.map((it) => (
                       <button key={it.to} onClick={() => navigate(it.to)} style={menuItem}>{it.label}</button>
                     ))}
+                    <button onClick={() => navigate('/notifications')} style={menuItem}>Notifications</button>
                     <button onClick={() => navigate('/subscription')} style={menuItem}>Account & Plan</button>
                     <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
                     <button onClick={logout} style={{ ...menuItem, color: 'var(--danger)' }}>Logout</button>

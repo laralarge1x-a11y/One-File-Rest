@@ -18,17 +18,19 @@ import { CustomerNav, BottomNav, ToastProvider, PageTransition, LoadingSpinner }
 
 // Client Pages
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Cases from './pages/Cases';
-import CaseDetail from './pages/CaseDetail';
-import NewCase from './pages/NewCase';
-import Messages from './pages/Messages';
-import PolicyAlerts from './pages/PolicyAlerts';
-import ViolationTimeline from './pages/ViolationTimeline';
-import Subscription from './pages/Subscription';
-import KnowledgeBase from './pages/KnowledgeBase';
-import KbArticle from './pages/KbArticle';
-import Specialists from './pages/Specialists';
+import Dashboard from './pages/Dashboard/Dashboard';
+import Cases from './pages/Cases/Cases';
+import CaseDetail from './pages/CaseDetail/CaseDetail';
+import NewCase from './pages/NewCase/NewCase';
+import Messages from './pages/Messages/Messages';
+import PolicyAlerts from './pages/PolicyAlerts/PolicyAlerts';
+import ViolationTimeline from './pages/ViolationTimeline/ViolationTimeline';
+import Subscription from './pages/Subscription/Subscription';
+import KnowledgeBase from './pages/KnowledgeBase/KnowledgeBase';
+import KbArticle from './pages/KbArticle/KbArticle';
+import Specialists from './pages/Specialists/Specialists';
+import NotificationsCenter from './pages/NotificationsCenter/NotificationsCenter';
+import AccountSettings from './pages/AccountSettings/AccountSettings';
 
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -45,7 +47,6 @@ import AdminSettings from './pages/admin/AdminSettings';
 import AITools from './pages/admin/AITools';
 import StageBoard from './pages/admin/StageBoard';
 
-import './App.css';
 
 const STAFF_ROLES = ['support', 'case_manager', 'owner', 'admin'];
 const ADMIN_ROLES = ['owner', 'admin'];
@@ -114,6 +115,8 @@ const AnimatedRoutes: React.FC<{ isStaff: boolean }> = ({ isStaff }) => {
         <Route path="/kb"           element={<ProtectedRoute><ClientLayout>{wrap(<KnowledgeBase />)}</ClientLayout></ProtectedRoute>} />
         <Route path="/kb/:slug"     element={<ProtectedRoute><ClientLayout>{wrap(<KbArticle />)}</ClientLayout></ProtectedRoute>} />
         <Route path="/specialists"  element={<ProtectedRoute><ClientLayout>{wrap(<Specialists />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/notifications" element={<ProtectedRoute><ClientLayout>{wrap(<NotificationsCenter />)}</ClientLayout></ProtectedRoute>} />
+        <Route path="/settings"     element={<ProtectedRoute><ClientLayout>{wrap(<AccountSettings />)}</ClientLayout></ProtectedRoute>} />
 
         {/* ── Admin Routes ── */}
         <Route path="/admin"             element={<ProtectedRoute requiredRole="staff"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />

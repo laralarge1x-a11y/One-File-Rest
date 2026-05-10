@@ -1,0 +1,12 @@
+@tailwind utilities;
+
+@layer utilities {
+  .bg-primary { background-color: var(--bg-primary); }
+  .bg-secondary { background-color: var(--bg-secondary); }
+  .bg-glass { background-color: var(--bg-glass); }
+  .bg-glass-hover { background-color: var(--bg-glass-hover); }
+  .text-primary { color: var(--text-primary); }
+  .text-secondary { color: var(--text-secondary); }
+  .text-muted { color: var(--text-muted); }
+  .border-default { border-color: var(--border); }
+}

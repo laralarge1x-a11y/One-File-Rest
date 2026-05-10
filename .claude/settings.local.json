@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(grep -E \"\\\\.tsx$\")",
+      "Bash([ -f \"C:/Users/xtrad/One-File-Rest/One-File-Rest/client/src/pages/$f.tsx\" ])",
+      "Bash([ -d \"C:/Users/xtrad/One-File-Rest/One-File-Rest/client/src/pages/$f\" ])",
+      "Bash(npx tsc *)"
+    ]
+  }
+}
